@@ -16,7 +16,7 @@ and boat-specific screens.
 > yet built and tested on hardware. The screenshots below are mockups rendered from
 > the layouts, not photos of the device.
 
-![Screen overview](screens/0_overview.png)
+![Screen overview](0_overview.png)
 
 ## Features
 
