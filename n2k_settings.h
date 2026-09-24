@@ -1,6 +1,11 @@
 // n2k_settings.h - persistent N2K settings (NVS namespace "n2k")
+//
+// Changes are made in RAM and written to flash by the network task
+// (n2k_save_pending(), called from net.cpp), like all other settings in this
+// project: flash writes can disturb the RGB display, so they happen in one place.
 #pragma once
 #include <Arduino.h>
+#include <ArduinoJson.h>
 #include "n2k_data.h"
 
 struct N2kSettings {
@@ -12,7 +17,12 @@ struct N2kSettings {
 extern N2kSettings n2kSettings;
 
 void     n2kSettingsLoad();
-uint32_t n2kSettingsVersion();     // changes on every save (UI re-reads)
+uint32_t n2kSettingsVersion();     // changes on every change (UI re-reads)
 void     n2kSetEngine(uint8_t instance, const char *name, uint8_t source);
 void     n2kSetTankName(uint8_t fluidType, uint8_t instance, const char *name);
 void     n2kSettingsApplyTankName(N2kTank &t);   // used internally when a tank is added
+
+// Settings backup (datalog.cpp): adds / reads an "n2k" object in the backup JSON.
+// Restore writes straight to flash; the board restarts afterwards.
+void     n2kBackup(JsonDocument &doc);
+void     n2kRestore(JsonDocument &doc);

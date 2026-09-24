@@ -6,8 +6,8 @@
 
 // ---------------------------------------------------------------------------
 // CAN / TWAI pins - Waveshare ESP32-S3-Touch-LCD-4
-// Waveshare's CAN demo for this board uses RX = GPIO0, TX = GPIO6.
-// Verify against the V4 schematic before connecting to the boat.
+// Confirmed by Waveshare's V4.0 hardware reference: TWAI TX = GPIO6, RX = GPIO0.
+// (I2C to touch/RTC/CH32V003 is GPIO15 SDA / GPIO7 SCL.)
 // ---------------------------------------------------------------------------
 #define N2K_CAN_TX_PIN        GPIO_NUM_6
 #define N2K_CAN_RX_PIN        GPIO_NUM_0

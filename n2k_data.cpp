@@ -1,6 +1,9 @@
 // n2k_data.cpp
 #include "n2k_data.h"
+#include "esp_heap_caps.h"
 #include "n2k_settings.h"
+#include "HWCDC.h"
+extern HWCDC USBSerial;   // board.cpp
 
 static N2kChannel s_ch[N2K_MAX_CHANNELS];
 static volatile int s_chCount = 0;
@@ -14,7 +17,7 @@ static volatile uint32_t s_tankVer = 1;
 
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static uint32_t s_ctxPgn = 0;
-static N2kDevice s_dev[254];
+static N2kDevice *s_dev = nullptr;   // 254 entries in PSRAM (internal RAM is scarce)
 
 void n2kSetPgnContext(uint32_t pgn) { s_ctxPgn = pgn; }
 
@@ -87,7 +90,7 @@ const char *n2kMfrName(uint16_t mfr) {
 }
 
 void n2kDeviceUpdate(uint8_t src, uint16_t mfr, uint8_t fn, uint8_t cls, const char *model) {
-  if (src >= 254) return;
+  if (src >= 254 || !s_dev) return;
   portENTER_CRITICAL(&s_mux);
   N2kDevice &d = s_dev[src];
   d.mfr = mfr; d.devFunction = fn; d.devClass = cls; d.known = true;
@@ -96,7 +99,7 @@ void n2kDeviceUpdate(uint8_t src, uint16_t mfr, uint8_t fn, uint8_t cls, const c
 }
 
 bool n2kDeviceCopy(uint8_t src, N2kDevice &out) {
-  if (src >= 254) return false;
+  if (src >= 254 || !s_dev) return false;
   portENTER_CRITICAL(&s_mux);
   out = s_dev[src];
   portEXIT_CRITICAL(&s_mux);
@@ -137,7 +140,7 @@ void n2kSet(N2kQty q, uint8_t inst, uint8_t sub, double v, uint8_t src) {
   }
   portEXIT_CRITICAL(&s_mux);
 #if N2K_DEBUG_SERIAL >= 1
-  Serial.printf("[N2K] %s[%u/%u] = %.4f %s (src %u)\n", n2kQtyName(q), inst, sub, v, n2kQtyUnit(q), src);
+  USBSerial.printf("[N2K] %s[%u/%u] = %.4f %s (src %u)\n", n2kQtyName(q), inst, sub, v, n2kQtyUnit(q), src);
 #endif
 }
 
@@ -248,5 +251,6 @@ void n2kTankTouch() { s_tankVer++; }
 
 void n2kDataInit() {
   s_chCount = 0; s_seenCount = 0; s_tankCount = 0;
+  if (!s_dev) s_dev = (N2kDevice *)heap_caps_calloc(254, sizeof(N2kDevice), MALLOC_CAP_SPIRAM);
   for (const auto &d : N2K_TANK_DEFS) addTank(d.fluidType, d.instance, d.name, true);
 }

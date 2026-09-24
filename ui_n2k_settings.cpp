@@ -2,6 +2,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <math.h>
+#include <string.h>
 #include "ui_n2k_settings.h"
 #include "ui_n2k_common.h"
 #include "n2k_config.h"
@@ -82,6 +83,8 @@ static void fmtLimit(float v, char *b, size_t n) {
 static void closeEditor() {
   if (s_ov) { lv_obj_del(s_ov); s_ov = nullptr; }
 }
+
+void ui_n2k_close_editor() { closeEditor(); }
 
 static float readField(int i) {
   const char *t = lv_textarea_get_text(s_ta[i]);
@@ -323,6 +326,25 @@ static void tick(lv_timer_t *) {
 
 static void onRefresh(lv_event_t *) { build(); }
 
+static lv_obj_t *s_scr = nullptr, *s_backTo = nullptr;
+static bool s_withBack = false;
+
+static void onBack(lv_event_t *) {
+  closeEditor();
+  if (s_backTo) lv_scr_load(s_backTo);
+}
+
+void ui_n2k_show_screen() {
+  if (!s_scr) {
+    s_scr = lv_obj_create(nullptr);
+    s_withBack = true;
+    ui_n2k_settings_create(s_scr);
+  }
+  s_backTo = lv_scr_act();
+  build();
+  lv_scr_load(s_scr);
+}
+
 void ui_n2k_settings_create(lv_obj_t *tab) {
   s_tab = tab;
   uiPrepTab(tab);
@@ -332,7 +354,16 @@ void ui_n2k_settings_create(lv_obj_t *tab) {
 
   lv_obj_t *hdr = box(tab, lv_pct(100), 44, 0);
   lv_obj_set_style_pad_all(hdr, 0, 0);
-  lv_obj_align(label(hdr, "NMEA 2000 devices", UI_FONT_L, 0xFFFFFF), LV_ALIGN_LEFT_MID, 2, 0);
+  if (s_withBack) {
+    lv_obj_t *bb = lv_btn_create(hdr);
+    lv_obj_set_size(bb, 90, 38);
+    lv_obj_align(bb, LV_ALIGN_LEFT_MID, 0, 0);
+    lv_obj_add_event_cb(bb, onBack, LV_EVENT_CLICKED, nullptr);
+    lv_obj_center(label(bb, LV_SYMBOL_LEFT " Back", UI_FONT_M, 0xFFFFFF));
+    lv_obj_align(label(hdr, "NMEA 2000", UI_FONT_L, 0xFFFFFF), LV_ALIGN_LEFT_MID, 102, 0);
+  } else {
+    lv_obj_align(label(hdr, "NMEA 2000 devices", UI_FONT_L, 0xFFFFFF), LV_ALIGN_LEFT_MID, 2, 0);
+  }
   lv_obj_t *rb = lv_btn_create(hdr);
   lv_obj_set_size(rb, 44, 38);
   lv_obj_align(rb, LV_ALIGN_RIGHT_MID, 0, 0);

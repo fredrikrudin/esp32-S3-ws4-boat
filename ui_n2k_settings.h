@@ -6,4 +6,11 @@
 #pragma once
 #include <lvgl.h>
 
+// Builds the list into a tab (or any scrollable parent).
 void ui_n2k_settings_create(lv_obj_t *tab);
+
+// Opens the list as a full screen with a Back button (used from Settings).
+void ui_n2k_show_screen();
+
+// Closes the limit editor if it is open (the screen saver calls this).
+void ui_n2k_close_editor();

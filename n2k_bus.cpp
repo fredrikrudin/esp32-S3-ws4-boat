@@ -16,6 +16,9 @@
 #include "n2k_data.h"
 #include "n2k_settings.h"
 #include "n2k_limits.h"
+#include "HWCDC.h"
+extern HWCDC USBSerial;                        // board.cpp
+void logf(const char *fmt, ...);               // sdlog.cpp: Serial + /log + TF card
 
 static NMEA2000_esp32_twai *s_n2k = nullptr;
 static tN2kDeviceList *s_devList = nullptr;   // names from address claim / product info
@@ -62,7 +65,7 @@ static void onMsg(const tN2kMsg &m) {
   n2kNoteSeen(m.PGN, m.Source);
   n2kSetPgnContext(m.PGN);
 #if N2K_DEBUG_SERIAL >= 2
-  Serial.printf("[N2K] PGN %lu src %u len %u\n", (unsigned long)m.PGN, m.Source, m.DataLen);
+  USBSerial.printf("[N2K] PGN %lu src %u len %u\n", (unsigned long)m.PGN, m.Source, m.DataLen);
 #endif
   const uint8_t src = m.Source;
 
@@ -190,10 +193,19 @@ static void n2kTask(void *) {
 }
 #endif
 
-void n2kBegin() {
+void n2kInit() {
   n2kSettingsLoad();
   n2kLimitsInit();
   n2kDataInit();
+}
+
+void n2kBegin() {
+  n2kInit();
+  n2kStart();
+}
+
+void n2kStart() {
+  if (s_n2k) return;
 
   s_n2k = new NMEA2000_esp32_twai(N2K_CAN_TX_PIN, N2K_CAN_RX_PIN, TWAI_MODE_NORMAL, 10, N2K_RX_QUEUE_LEN);
   s_n2k->SetN2kCANMsgBufSize(8);
@@ -211,10 +223,10 @@ void n2kBegin() {
   s_devList = new tN2kDeviceList(s_n2k);
 
   bool ok = s_n2k->Open();
-  Serial.printf("[N2K] CAN TX=%d RX=%d, %s, open %s\n", (int)N2K_CAN_TX_PIN, (int)N2K_CAN_RX_PIN,
-                N2K_LISTEN_ONLY ? "listen-only" : "node", ok ? "OK" : "FAILED");
-  Serial.printf("[N2K] Engine tab: \"%s\" instance %u, source %s\n", n2kSettings.engName,
-                n2kSettings.engInstance, n2kSettings.engSource == 255 ? "any" : String(n2kSettings.engSource).c_str());
+  logf("N2K: CAN TX=%d RX=%d, %s, open %s", (int)N2K_CAN_TX_PIN, (int)N2K_CAN_RX_PIN,
+       N2K_LISTEN_ONLY ? "listen-only" : "node", ok ? "OK" : "FAILED");
+  logf("N2K: Engine tab shows \"%s\" instance %u, source %s", n2kSettings.engName,
+       n2kSettings.engInstance, n2kSettings.engSource == 255 ? "any" : String(n2kSettings.engSource).c_str());
 
 #if N2K_OWN_TASK
   xTaskCreatePinnedToCore(n2kTask, "n2k", 6144, nullptr, 3, nullptr, N2K_TASK_CORE);

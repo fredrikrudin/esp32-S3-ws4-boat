@@ -2,7 +2,9 @@
 #pragma once
 #include <Arduino.h>
 
-void     n2kBegin();          // call once in setup(), after Serial
+void     n2kInit();           // settings, limits, data store - before the UI is built
+void     n2kStart();          // CAN bus + receive task - after WiFi init (internal RAM order)
+void     n2kBegin();          // n2kInit() + n2kStart()
 void     n2kLoop();           // call from loop() - does nothing if N2K_OWN_TASK is true
 bool     n2kBusOk();          // messages received within the last 5 s
 uint32_t n2kMsgCount();       // total N2K messages handled

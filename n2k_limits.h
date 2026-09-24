@@ -30,5 +30,10 @@ uint32_t  n2kLimitsVersion();                                         // changes
 // checkLow = false ignores the low limits (e.g. oil pressure while the engine is stopped)
 N2kLevel  n2kLimitsEval(const N2kLimits &l, double v, bool checkLow = true);
 
+// Flash: set/reset only mark the limits as changed; the network task writes them
+void        n2kLimitsSavePending();
+const void *n2kLimitsBlob(size_t *len);                 // raw records, for the settings backup
+void        n2kLimitsWriteBlob(const void *d, size_t len);  // restore: straight to flash
+
 // Order check: gMin < gMax, alarmLo <= warnLo < warnHi <= alarmHi (unused ones skipped)
 bool      n2kLimitsValid(const N2kLimits &l, const char **err);

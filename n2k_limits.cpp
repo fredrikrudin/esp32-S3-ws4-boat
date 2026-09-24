@@ -9,6 +9,7 @@ static LimRec s_rec[N2K_MAX_LIMIT_OVERRIDES];
 static volatile uint32_t s_ver = 1;
 static portMUX_TYPE s_mux = portMUX_INITIALIZER_UNLOCKED;
 static const uint8_t REC_FORMAT = 1;
+static volatile bool s_dirty = false;
 
 static const N2kLimits NONE = { NAN, NAN, NAN, NAN, NAN, NAN };
 
@@ -45,11 +46,29 @@ static int findRec(uint8_t q, uint8_t inst, uint8_t sub) {
   return -1;
 }
 
-static void save() {
+static void save() { s_dirty = true; }   // written later by the network task
+
+void n2kLimitsSavePending() {
+  if (!s_dirty) return;
+  s_dirty = false;
+  static LimRec copy[N2K_MAX_LIMIT_OVERRIDES];
+  portENTER_CRITICAL(&s_mux);
+  memcpy(copy, s_rec, sizeof(copy));
+  portEXIT_CRITICAL(&s_mux);
+  n2kLimitsWriteBlob(copy, sizeof(copy));
+}
+
+const void *n2kLimitsBlob(size_t *len) {
+  *len = sizeof(s_rec);
+  return s_rec;
+}
+
+void n2kLimitsWriteBlob(const void *d, size_t len) {
+  if (len != sizeof(s_rec)) return;
   Preferences p;
   p.begin("n2klim", false);
   p.putUChar("fmt", REC_FORMAT);
-  p.putBytes("recs", s_rec, sizeof(s_rec));
+  p.putBytes("recs", d, len);
   p.end();
 }
 
