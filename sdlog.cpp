@@ -1,5 +1,7 @@
 /* Logging to the Serial Monitor, to a ring buffer in PSRAM (readable at /log in
    the browser) and, if switched on, to the TF card.
+   The card is mounted in setup() (when the log or the CSV log is switched on) or
+   with the Mount button in Settings; logf() itself never mounts or unmounts.
    The card uses SDMMC in 1-bit mode: GPIO2 clock, GPIO1 command, GPIO4 data,
    so no chip-select pin is needed. Those pins are shared with the display's
    configuration SPI, which is only used while the panel starts up. */
@@ -13,6 +15,7 @@
 #define SD_FLUSH_MS 5000  // how often the file is flushed
 
 static SemaphoreHandle_t log_mtx;
+static SemaphoreHandle_t mount_mtx;  // one mount at a time (setup and Settings buttons)
 static char *ring = nullptr;  // in PSRAM
 static size_t ring_len = 0;   // bytes used (grows to LOG_RING, then wraps)
 static size_t ring_pos = 0;
@@ -37,37 +40,80 @@ static void ring_write(const char *s, size_t n) {
   ring_len = ring_wrapped ? LOG_RING : ring_pos;
 }
 
-/* Waveshare's own SD demo does exactly this: set the three pins, mount in
-   1-bit mode. The CH32 chip is not involved, so nothing else is touched. */
+/* Mounting happens in setup() and from the Settings buttons, never inside logf():
+   it can take several seconds, and logf() holds the log lock.
+
+   Waveshare's own SD demo sets the three pins and mounts in 1-bit mode, but it
+   also waits 3 s after starting the CH32 chip, which powers parts of the board.
+   Mounting too early is the most likely reason a card is not found, so the same
+   wait is honoured here, and slower bus speeds are tried before giving up.
+   The slow part runs without the log lock, so logging carries on meanwhile. */
 bool sd_log_mount() {
   if (sd_mounted) return true;
-
-  SD_MMC.setPins(SD_CLK, SD_CMD, SD_D0);
-  bool ok = SD_MMC.begin("/sdcard", true);  // true = 1-bit mode
-  if (!ok) {  // one retry: the card sometimes needs a moment after being inserted
-    SD_MMC.end();
-    delay(100);
-    ok = SD_MMC.begin("/sdcard", true);
+  if (!mount_mtx) return false;              // log_begin() not called yet
+  xSemaphoreTake(mount_mtx, portMAX_DELAY);
+  if (sd_mounted) {                          // mounted by someone else while we waited
+    xSemaphoreGive(mount_mtx);
+    return true;
   }
-  if (!ok || SD_MMC.cardType() == CARD_NONE) {
+
+  if (millis() < 3200) {  // as in Waveshare's example: let the board settle
+    logf("SD: waiting for the board to settle before mounting");
+    delay(3200 - millis());
+  }
+
+  struct {
+    int freq;
+    const char *what;
+  } attempts[] = {
+    { 0, "default speed" },
+    { SDMMC_FREQ_DEFAULT, "20 MHz" },
+    { SDMMC_FREQ_HIGHSPEED, "40 MHz" },
+    { SDMMC_FREQ_PROBING, "400 kHz" },
+  };
+
+  bool ok = false;
+  for (auto &a : attempts) {
+    SD_MMC.setPins(SD_CLK, SD_CMD, SD_D0);
+    ok = a.freq ? SD_MMC.begin("/sdcard", true, false, a.freq)
+                : SD_MMC.begin("/sdcard", true);
+    if (ok && SD_MMC.cardType() != CARD_NONE) {
+      logf("SD: mounted at %s", a.what);
+      break;
+    }
     SD_MMC.end();
+    ok = false;
+    delay(100);
+  }
+
+  if (!ok) {
     strlcpy(sd_msg, "No card found", sizeof(sd_msg));
-    logf("SD: no card found");
+    logf("SD: no card found (tried four bus speeds on GPIO %d/%d/%d)", SD_CLK, SD_CMD, SD_D0);
+    xSemaphoreGive(mount_mtx);
     return false;
   }
 
   uint64_t mb = SD_MMC.cardSize() / (1024 * 1024);
-  log_file = SD_MMC.open(log_name, FILE_APPEND);
-  if (!log_file) {
+  File f = SD_MMC.open(log_name, FILE_APPEND);
+  if (!f) {
     SD_MMC.end();
     strlcpy(sd_msg, "Card found, but cannot write", sizeof(sd_msg));
     logf("SD: card found (%llu MB) but the file could not be opened - FAT32?", (unsigned long long)mb);
+    xSemaphoreGive(mount_mtx);
     return false;
   }
+  f.printf("\n--- board started, %lu ms ---\n", (unsigned long)millis());
+
+  /* publish under the log lock: from here on logf() writes to the file */
+  xSemaphoreTake(log_mtx, portMAX_DELAY);
+  log_file = f;
+  last_flush = millis();
   sd_mounted = true;
   snprintf(sd_msg, sizeof(sd_msg), "Logging to %s (card %llu MB)", log_name, (unsigned long long)mb);
+  xSemaphoreGive(log_mtx);
+
   logf("SD: mounted, card %llu MB", (unsigned long long)mb);
-  log_file.printf("\n--- board started, %lu ms ---\n", (unsigned long)millis());
+  xSemaphoreGive(mount_mtx);
   return true;
 }
 
@@ -76,11 +122,15 @@ fs::FS &sd_fs() {
 }
 
 void sd_log_unmount() {
-  if (!sd_mounted) return;
-  log_file.close();
-  SD_MMC.end();
-  sd_mounted = false;
-  strlcpy(sd_msg, "Card not in use", sizeof(sd_msg));
+  if (!sd_mounted || !log_mtx) return;
+  xSemaphoreTake(log_mtx, portMAX_DELAY);  // not while logf() is writing
+  if (sd_mounted) {
+    log_file.close();
+    SD_MMC.end();
+    sd_mounted = false;
+    strlcpy(sd_msg, "Card not in use", sizeof(sd_msg));
+  }
+  xSemaphoreGive(log_mtx);
 }
 
 bool sd_log_ok() {
@@ -97,6 +147,7 @@ size_t sd_log_size() {
 
 void log_begin() {
   log_mtx = xSemaphoreCreateMutex();
+  mount_mtx = xSemaphoreCreateMutex();
   ring = (char *)heap_caps_malloc(LOG_RING, MALLOC_CAP_SPIRAM);
   if (!ring) USBSerial.println("Log ring buffer allocation failed");
 }
@@ -122,17 +173,14 @@ void logf(const char *fmt, ...) {
     return;
   }
   ring_write(buf, n);
-  if (feat_sdlog) {
-    if (!sd_mounted) sd_log_mount();
-    if (sd_mounted) {
-      log_file.print(buf);
-      if (millis() - last_flush > SD_FLUSH_MS) {
-        log_file.flush();
-        last_flush = millis();
-      }
+  /* Only writes: mounting is done by setup() and the Settings buttons, and the card
+     stays mounted when this switch is off, because the CSV log may still use it. */
+  if (feat_sdlog && sd_mounted) {
+    log_file.print(buf);
+    if (millis() - last_flush > SD_FLUSH_MS) {
+      log_file.flush();
+      last_flush = millis();
     }
-  } else if (sd_mounted) {
-    sd_log_unmount();
   }
   xSemaphoreGive(log_mtx);
 }

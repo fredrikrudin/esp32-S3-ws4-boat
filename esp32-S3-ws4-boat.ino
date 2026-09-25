@@ -17,10 +17,10 @@ void setup() {
 
   board_init();  // IO expander, touch, display, LVGL
   log_begin();   // Serial + ring buffer (+ TF card when switched on)
-  if (feat_sdlog) sd_log_mount();  // before WiFi and Bluetooth, as in Waveshare's SD demo
   history_begin();
   state_init();
-  load_cfg();
+  load_cfg();    // loads feat_sdlog / feat_csv, so the card is mounted after this
+  if (feat_sdlog || feat_csv) sd_log_mount();  // before WiFi and Bluetooth, as in Waveshare's SD demo
   n2kInit();   // NMEA 2000 settings, limits and value store (the tabs read them)
 
   build_ui();

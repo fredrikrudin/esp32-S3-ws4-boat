@@ -42,6 +42,9 @@ String n2kJson() {
   o += "},\"engine\":{\"instance\":"; o += n2kSettings.engInstance;
   o += ",\"source\":";      o += n2kSettings.engSource;
   o += ",\"name\":";        jstr(o, n2kSettings.engName);
+  o += ",\"twin\":";        o += n2kSettings.twin ? "true" : "false";
+  o += ",\"port_name\":";   jstr(o, n2kSettings.portName);
+  o += ",\"stbd_name\":";   jstr(o, n2kSettings.stbdName);
   o += "},\"devices\":[";
 
   static N2kSeenPgn seen[N2K_MAX_SEEN_PGNS];
@@ -141,6 +144,8 @@ static float parseLimit(const String &s) {
 //   engine_instance = 0..252
 //   engine_name     = text (ASCII)
 //   engine_source   = 0..251, or 255 for any source
+//   twin_engines    = 0 / 1   start page shows port and starboard RPM
+//   port_name, stbd_name = text on the two dials
 //   tank_name       = "<fluidType>,<instance>,<name>"   e.g. "1,0,Fresh water"
 //   limits          = "<q>,<inst>,<sub>,<gauge_min>,<gauge_max>,<alarm_low>,<warn_low>,<warn_high>,<alarm_high>"
 //                     empty field = off, e.g. "eng_coolant_t,0,0,40,120,,,90,98"
@@ -179,6 +184,16 @@ bool n2kApplySetting(const String &key, const String &value) {
     uint8_t q, inst, sub;
     if (!parseKey(f, q, inst, sub)) return false;
     n2kLimitsReset(q, inst, sub);
+    return true;
+  }
+  if (key == "twin_engines") {
+    n2kSetTwin(value.toInt() != 0, nullptr, nullptr);
+    return true;
+  }
+  if (key == "port_name" || key == "stbd_name") {
+    if (!value.length()) return false;
+    bool port = key == "port_name";
+    n2kSetTwin(n2kSettings.twin, port ? value.c_str() : nullptr, port ? nullptr : value.c_str());
     return true;
   }
   if (key == "tank_name") {

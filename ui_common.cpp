@@ -56,6 +56,15 @@ static void ta_event_cb(lv_event_t *e) {
   }
 }
 
+/* Tabs by id: 0 Home, 1 Nav, 2 Engine, 3 Tanks, 4 Power, 5 Temp, 6 Weather, 7 Settings */
+uint16_t ui_active_tab() {
+  return tabview ? lv_tabview_get_tab_act(tabview) : 0;
+}
+
+void ui_show_tab(uint16_t id) {
+  if (tabview && lv_tabview_get_tab_act(tabview) != id) lv_tabview_set_act(tabview, id, LV_ANIM_ON);
+}
+
 /* ---------- widget helpers ---------- */
 lv_obj_t *make_row(lv_obj_t *parent, lv_flex_align_t main_align) {
   lv_obj_t *r = lv_obj_create(parent);
@@ -256,7 +265,7 @@ void build_ui() {
   lv_timer_create(clock_timer_cb, 500, NULL);
   lv_timer_create(net_poll_cb, 200, NULL);
   lv_timer_create(ruuvi_timer_cb, 1000, NULL);
-  lv_timer_create(home_timer_cb, 1000, NULL);
+  lv_timer_create(home_timer_cb, 500, NULL);  // 500 ms: the alarm banner blinks
   lv_timer_create(power_timer_cb, 1000, NULL);
   lv_timer_create(saver_timer_cb, 500, NULL);
   lv_timer_create(history_timer_cb, 5000, NULL);

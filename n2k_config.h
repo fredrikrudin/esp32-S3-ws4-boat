@@ -48,6 +48,13 @@
 #define ENG_DEFAULT_NAME      "Motor"
 #define ENG_DEFAULT_SOURCE    255     // 255 = accept any source address
 
+// Twin engines (start page shows both RPM dials): N2K instances and default names.
+// Switched on in Settings -> NMEA 2000; names can be changed via the web API.
+#define ENG_PORT_INSTANCE     0
+#define ENG_STBD_INSTANCE     1
+#define ENG_PORT_NAME         "Port"
+#define ENG_STBD_NAME         "Starboard"
+
 // Screensaver while the Engine tab is shown:
 //   0 = normal screensaver
 //   1 = never while the Engine tab is on screen (default)

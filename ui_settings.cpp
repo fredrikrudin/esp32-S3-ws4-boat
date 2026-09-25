@@ -297,6 +297,10 @@ static void n2k_open_cb(lv_event_t *e) {
   ui_n2k_show_screen();
 }
 
+static void twin_cb(lv_event_t *e) {
+  n2kSetTwin(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED), nullptr, nullptr);
+}
+
 static void n2k_timer_cb(lv_timer_t *t) {
   if (!lv_obj_is_visible(lbl_n2k)) return;
   int devs = 0;
@@ -358,8 +362,8 @@ static void sdlog_cb(lv_event_t *e) {
   if (feat_sdlog) {
     sd_log_mount();
     logf("Logging to the TF card switched on");
-  } else {
-    sd_log_unmount();
+  } else if (!feat_csv) {
+    sd_log_unmount();  // keep the card mounted while the CSV log still uses it
   }
   update_sdlog_label();
 }
@@ -515,6 +519,7 @@ void build_settings_tab() {
   lv_obj_set_width(lbl_n2k, LV_PCT(100));
   lv_label_set_long_mode(lbl_n2k, LV_LABEL_LONG_WRAP);
   lv_label_set_text(lbl_n2k, "");
+  make_switch_row(sec, "Twin engines: start page shows port and starboard RPM", n2kSettings.twin, twin_cb);
   make_btn(sec, LV_SYMBOL_LIST " Devices, gauge ranges and limits", n2k_open_cb);
   lv_obj_t *n2k_hint = make_grey_label(sec);
   lv_obj_set_width(n2k_hint, LV_PCT(100));

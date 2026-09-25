@@ -51,6 +51,10 @@ static void saver_wake_cb(lv_event_t *e) {
   lv_disp_trig_activity(NULL);
 }
 
+void saver_wake() {
+  if (saver_scr && lv_scr_act() == saver_scr) saver_wake_cb(NULL);
+}
+
 void build_saver() {
   main_scr = lv_scr_act();
 

@@ -21,6 +21,11 @@ void n2kSettingsLoad() {
   n2kSettings.engInstance = p.getUChar("engInst", ENG_DEFAULT_INSTANCE);
   n2kSettings.engSource   = p.getUChar("engSrc", ENG_DEFAULT_SOURCE);
   String nm = p.getString("engName", ENG_DEFAULT_NAME);
+  n2kSettings.twin = p.getBool("twin", false);
+  String pn = p.getString("portName", ENG_PORT_NAME);
+  String sn = p.getString("stbdName", ENG_STBD_NAME);
+  strlcpy(n2kSettings.portName, pn.c_str(), sizeof(n2kSettings.portName));
+  strlcpy(n2kSettings.stbdName, sn.c_str(), sizeof(n2kSettings.stbdName));
   memset(s_tn, 0, sizeof(s_tn));
   if (p.getBytesLength("tnames") == sizeof(s_tn)) p.getBytes("tnames", s_tn, sizeof(s_tn));
   p.end();
@@ -32,6 +37,14 @@ void n2kSetEngine(uint8_t instance, const char *name, uint8_t source) {
   n2kSettings.engInstance = instance;
   n2kSettings.engSource   = source;
   if (name && *name) strlcpy(n2kSettings.engName, name, sizeof(n2kSettings.engName));
+  s_dirtyEngine = true;
+  s_ver++;
+}
+
+void n2kSetTwin(bool twin, const char *portName, const char *stbdName) {
+  n2kSettings.twin = twin;
+  if (portName && *portName) strlcpy(n2kSettings.portName, portName, sizeof(n2kSettings.portName));
+  if (stbdName && *stbdName) strlcpy(n2kSettings.stbdName, stbdName, sizeof(n2kSettings.stbdName));
   s_dirtyEngine = true;
   s_ver++;
 }
@@ -76,6 +89,9 @@ void n2k_save_pending() {
       p.putUChar("engInst", n2kSettings.engInstance);
       p.putUChar("engSrc",  n2kSettings.engSource);
       p.putString("engName", n2kSettings.engName);
+      p.putBool("twin", n2kSettings.twin);
+      p.putString("portName", n2kSettings.portName);
+      p.putString("stbdName", n2kSettings.stbdName);
     }
     if (s_dirtyTanks) {
       s_dirtyTanks = false;
@@ -117,6 +133,9 @@ void n2kBackup(JsonDocument &doc) {
   n["eng_inst"] = n2kSettings.engInstance;
   n["eng_src"]  = n2kSettings.engSource;
   n["eng_name"] = n2kSettings.engName;
+  n["twin"]     = n2kSettings.twin;
+  n["port_name"] = n2kSettings.portName;
+  n["stbd_name"] = n2kSettings.stbdName;
   portENTER_CRITICAL(&s_mux);
   N2kTankNameRec copy[N2K_MAX_TANKS];
   memcpy(copy, s_tn, sizeof(copy));
@@ -135,6 +154,9 @@ void n2kRestore(JsonDocument &doc) {
   p.putUChar("engInst", n["eng_inst"] | ENG_DEFAULT_INSTANCE);
   p.putUChar("engSrc",  n["eng_src"]  | ENG_DEFAULT_SOURCE);
   p.putString("engName", (const char *)(n["eng_name"] | ENG_DEFAULT_NAME));
+  p.putBool("twin", n["twin"] | false);
+  p.putString("portName", (const char *)(n["port_name"] | ENG_PORT_NAME));
+  p.putString("stbdName", (const char *)(n["stbd_name"] | ENG_STBD_NAME));
   static N2kTankNameRec tn[N2K_MAX_TANKS];
   if (fromHex(n["tanks"] | "", tn, sizeof(tn))) p.putBytes("tnames", tn, sizeof(tn));
   p.end();

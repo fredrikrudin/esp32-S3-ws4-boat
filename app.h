@@ -302,8 +302,10 @@ lv_obj_t *make_segment(lv_obj_t *parent, lv_event_cb_t cb, void *user_data);  //
 void set_segment(lv_obj_t *seg, bool on);
 
 /* ui_home.cpp */
-void build_home_tab();
-void home_timer_cb(lv_timer_t *t);
+void build_home_tab();                 // start page: depth, speed, engine, battery, tanks, alarms
+void home_timer_cb(lv_timer_t *t);     // every 500 ms
+uint16_t ui_active_tab();              // 0 Home, 1 Nav, 2 Engine, 3 Tanks, 4 Power, 5 Temp, 6 Weather, 7 Settings
+void ui_show_tab(uint16_t id);
 
 /* ui_power.cpp */
 void build_power_tab();
@@ -334,3 +336,4 @@ void n2k_save_pending();  // called by the network task: does the N2K flash writ
 /* ui_saver.cpp */
 void build_saver();
 void saver_timer_cb(lv_timer_t *t);
+void saver_wake();  // leave the screen saver (used by the start page on a new alarm)

@@ -47,6 +47,8 @@ Settings keys:
 | `engine_instance` | 0–252 | `1` |
 | `engine_name` | text | `Styrbord` |
 | `engine_source` | N2K source address, 255 = any | `23` |
+| `twin_engines` | 0 / 1: start page shows port and starboard RPM | `1` |
+| `port_name`, `stbd_name` | names on the two dials | `Babord` |
 | `tank_name` | `fluidType,instance,name` | `1,0,Fresh water fwd` |
 | `limits` | `q,inst,sub,gauge_min,gauge_max,alarm_low,warn_low,warn_high,alarm_high` (empty = off) | `eng_coolant_t,0,0,40,120,,,90,98` |
 | `limits_reset` | `q,inst,sub` | `eng_coolant_t,0,0` |
