@@ -224,6 +224,9 @@ Flat folder: `app.h` holds shared configuration, types and declarations; each `.
 
 ## Hardware notes
 
+- **TF card**: on the V4 board the slot works over **SPI** (SCK GPIO2, MOSI GPIO1, MISO GPIO4), with chip select handled on the board. Waveshare's own `10_LVGL_SD` example uses SD_MMC and does not work on this revision (error `0x107`, `send_op_cond` timeout). Settings → SD card → **Probe card** tries both bus modes, both expander direction values and every bit, and logs what works.
+
+
 - **CAN / NMEA 2000:** TX = GPIO6, RX = GPIO0 (Waveshare V4.0 hardware reference).
   NET-H → CAN-H, NET-L → CAN-L, common ground with the boat's 12 V. Do **not** switch on the
   board's 120 Ω termination: an N2K backbone is already terminated. The display only listens
