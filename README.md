@@ -1,5 +1,8 @@
 # esp32-S3-ws4-boat
 
+See **[BOARD_NOTES.md](BOARD_NOTES.md)** for hard-won notes about this board: SD card wiring, memory limits, LVGL 8 pitfalls and the BLE protocols used here.
+
+
 Boat display for the **Waveshare ESP32-S3-Touch-LCD-4 (V4)**, the 480×480 touch board with
 the CH32V003 IO expander and an on-board CAN transceiver. Built with Arduino and LVGL 8.
 
