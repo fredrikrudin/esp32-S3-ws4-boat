@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // ui_gauge.h - generic analog gauge (needle + tick scale + coloured zones + digital readout)
 // Range, ticks and zones come from N2kLimits and can be changed at runtime.
 // Built on lv_meter (LVGL 8.x, needs LV_USE_METER 1 in lv_conf.h - default on).

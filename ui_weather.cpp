@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 /* Weather tab: NTP clock, current weather, 3-day forecast.
    Also moves WiFi/weather results from the network task into the UI. */
 #include "app.h"
@@ -55,7 +56,16 @@ void build_weather_tab() {
     lv_label_set_text(fc_temp[i], "");
   }
 
-  lbl_updated = make_grey_label(tab_weather);
+  /* when it was fetched, and a button to fetch it now */
+  row = make_row(tab_weather, LV_FLEX_ALIGN_CENTER);
+  lv_obj_set_style_pad_column(row, 16, 0);
+  lbl_updated = make_grey_label(row);
+  lv_obj_t *btn = make_btn(row, LV_SYMBOL_REFRESH " Refresh", [](lv_event_t *e) {
+    if (!g.has_loc) return;
+    cmd_weather = true;  // the network task fetches it within a moment
+    lv_label_set_text(lbl_updated, "Updating weather...");
+  });
+  lv_obj_set_height(btn, 36);
 }
 
 static void show_weather(const Weather &w) {
@@ -65,10 +75,10 @@ static void show_weather(const Weather &w) {
   snprintf(b, sizeof(b), "%.1f" DEG "C", w.temp);
   lv_label_set_text(lbl_temp, b);
 
-  snprintf(b, sizeof(b), "%s\nH %.0f" DEG "  L %.0f" DEG, wmo_text(w.code), w.today_max, w.today_min);
+  snprintf(b, sizeof(b), TR("%s\nH %.0f" DEG "  L %.0f" DEG), TR(wmo_text(w.code)), w.today_max, w.today_min);
   lv_label_set_text(lbl_cond, b);
 
-  snprintf(b, sizeof(b), "Feels %.1f" DEG "   Humidity %d%%   Wind %.1f m/s", w.feels, w.humidity, w.wind);
+  snprintf(b, sizeof(b), TR("Feels %.1f" DEG "   Humidity %d%%   Wind %.1f m/s"), w.feels, w.humidity, w.wind);
   lv_label_set_text(lbl_details, b);
 
   for (int i = 0; i < 3; i++) {
@@ -82,7 +92,7 @@ static void show_weather(const Weather &w) {
     time_t t = w.fetched + g.utc_offset;
     struct tm tm;
     gmtime_r(&t, &tm);
-    strftime(b, sizeof(b), "Updated %H:%M", &tm);
+    strftime(b, sizeof(b), TR("Updated %H:%M"), &tm);
     lv_label_set_text(lbl_updated, b);
   }
 }
@@ -91,19 +101,23 @@ void format_local_time(char *tb, char *db) {
   time_t now = time(nullptr);
   if (now < 1700000000) {  // not synced yet
     strcpy(tb, "--:--");
-    strcpy(db, "Waiting for time sync");
+    strcpy(db, TR("Waiting for time sync"));
     return;
   }
   time_t lt = now + g.utc_offset;
   struct tm tm;
   gmtime_r(&lt, &tm);
   strftime(tb, 16, "%H:%M", &tm);
-  strftime(db, 64, "%A %d %B %Y", &tm);
-  if (!g.offset_valid) strlcat(db, "  (UTC)", 64);
+  if (ui_translated)  // e.g. "onsdag 8 oktober 2026"
+    snprintf(db, 64, "%s %d %s %d", tr_weekday(tm.tm_wday), tm.tm_mday, tr_month(tm.tm_mon), tm.tm_year + 1900);
+  else
+    strftime(db, 64, "%A %d %B %Y", &tm);
+  if (!g.offset_valid) strlcat(db, TR("  (UTC)"), 64);
 }
 
 void clock_timer_cb(lv_timer_t *t) {
   char tb[16], db[64];
+  if (!tab_visible(tab_weather)) return;  // the screen saver has its own clock
   format_local_time(tb, db);
   set_label(lbl_clock, tb);
   set_label(lbl_date, db);

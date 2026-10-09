@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // n2k_bus.h - NMEA 2000 over the on-board CAN (TWAI) transceiver
 #pragma once
 #include <Arduino.h>

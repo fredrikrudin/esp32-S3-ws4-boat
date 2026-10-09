@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // ui_nav.cpp - Navigation tab
 #include <stdio.h>
 #include <math.h>
@@ -20,7 +21,8 @@ static void fmtCoord(char *b, size_t n, double v, bool isLat) {
   snprintf(b, n, isLat ? "%02d\xC2\xB0%06.3f'%c" : "%03d\xC2\xB0%06.3f'%c", d, m, h);
 }
 
-static void tick(lv_timer_t *) {
+static void tick(lv_timer_t *t) {
+  if (t && !tab_visible(tab_nav)) return;  // nothing to redraw while another tab is shown
   char buf[64];
   double v, off;
 

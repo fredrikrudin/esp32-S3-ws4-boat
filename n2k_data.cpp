@@ -1,9 +1,10 @@
+// esp32-S3-ws4-boat v1.0
 // n2k_data.cpp
 #include "n2k_data.h"
+#define N_(s) s  // marks text for translation (tools/i18n.py); it is translated where it is shown
 #include "esp_heap_caps.h"
 #include "n2k_settings.h"
-#include "HWCDC.h"
-extern HWCDC USBSerial;   // board.cpp
+void serf(const char *fmt, ...);  // sdlog.cpp: USB serial only, with the serial monitor on
 
 static N2kChannel s_ch[N2K_MAX_CHANNELS];
 static volatile int s_chCount = 0;
@@ -33,9 +34,9 @@ static const char *QTY_UNITS[Q_COUNT] = {
 };
 
 static const char *QTY_LABELS[Q_COUNT] = {
-  "Depth", "Depth offset", "Speed (log)", "SOG", "COG", "Sea temp", "Temperature", "Battery", "Battery current",
-  "Latitude", "Longitude", "RPM", "Oil pressure", "Oil temp", "Coolant temp", "Alternator",
-  "Fuel rate", "Engine hours", "Engine status 1", "Engine status 2", "Tank level", "Tank capacity"
+  N_("Depth"), N_("Depth offset"), N_("Speed (log)"), N_("SOG"), N_("COG"), N_("Sea temp"), N_("Temperature"), N_("Battery"), N_("Battery current"),
+  N_("Latitude"), N_("Longitude"), N_("RPM"), N_("Oil pressure"), N_("Oil temp"), N_("Coolant temp"), N_("Alternator"),
+  N_("Fuel rate"), N_("Engine hours"), N_("Engine status 1"), N_("Engine status 2"), N_("Tank level"), N_("Tank capacity")
 };
 
 const char *n2kQtyName(uint8_t q) { return q < Q_COUNT ? QTY_NAMES[q] : "?"; }
@@ -47,28 +48,28 @@ int n2kQtyFromName(const char *name) {
 
 struct PgnName { uint32_t pgn; const char *name; };
 static const PgnName PGN_NAMES[] = {
-  {59392, "ISO Acknowledge"}, {59904, "ISO Request"}, {60928, "Address claim"},
-  {126208, "Group function"}, {126464, "PGN list"}, {126720, "Proprietary"},
-  {126992, "System time"}, {126993, "Heartbeat"}, {126996, "Product info"}, {126998, "Config info"},
-  {127233, "MOB"}, {127237, "Heading/track control"}, {127245, "Rudder"}, {127250, "Heading"},
-  {127251, "Rate of turn"}, {127257, "Attitude"}, {127258, "Magnetic variation"},
-  {127488, "Engine rapid"}, {127489, "Engine dynamic"}, {127493, "Transmission"}, {127497, "Trip fuel"},
-  {127501, "Binary switch status"}, {127505, "Fluid level"}, {127506, "DC status"}, {127507, "Charger status"},
-  {127508, "Battery status"}, {127513, "Battery config"},
-  {128259, "Speed (water)"}, {128267, "Water depth"}, {128275, "Distance log"},
-  {129025, "Position rapid"}, {129026, "COG & SOG rapid"}, {129029, "GNSS position"},
-  {129033, "Time & date"}, {129038, "AIS class A pos"}, {129039, "AIS class B pos"},
-  {129283, "Cross track error"}, {129284, "Navigation data"}, {129285, "Route/WP info"},
-  {129539, "GNSS DOPs"}, {129540, "GNSS sats in view"}, {129794, "AIS class A static"},
-  {129809, "AIS class B static A"}, {129810, "AIS class B static B"},
-  {130306, "Wind"}, {130310, "Environment (outside)"}, {130311, "Environment"},
-  {130312, "Temperature"}, {130313, "Humidity"}, {130314, "Pressure"}, {130316, "Temperature ext"},
-  {130577, "Direction data"},
+  {59392, N_("ISO Acknowledge")}, {59904, N_("ISO Request")}, {60928, N_("Address claim")},
+  {126208, N_("Group function")}, {126464, N_("PGN list")}, {126720, N_("Proprietary")},
+  {126992, N_("System time")}, {126993, N_("Heartbeat")}, {126996, N_("Product info")}, {126998, N_("Config info")},
+  {127233, N_("MOB")}, {127237, N_("Heading/track control")}, {127245, N_("Rudder")}, {127250, N_("Heading")},
+  {127251, N_("Rate of turn")}, {127257, N_("Attitude")}, {127258, N_("Magnetic variation")},
+  {127488, N_("Engine rapid")}, {127489, N_("Engine dynamic")}, {127493, N_("Transmission")}, {127497, N_("Trip fuel")},
+  {127501, N_("Binary switch status")}, {127505, N_("Fluid level")}, {127506, N_("DC status")}, {127507, N_("Charger status")},
+  {127508, N_("Battery status")}, {127513, N_("Battery config")},
+  {128259, N_("Speed (water)")}, {128267, N_("Water depth")}, {128275, N_("Distance log")},
+  {129025, N_("Position rapid")}, {129026, N_("COG & SOG rapid")}, {129029, N_("GNSS position")},
+  {129033, N_("Time & date")}, {129038, N_("AIS class A pos")}, {129039, N_("AIS class B pos")},
+  {129283, N_("Cross track error")}, {129284, N_("Navigation data")}, {129285, N_("Route/WP info")},
+  {129539, N_("GNSS DOPs")}, {129540, N_("GNSS sats in view")}, {129794, N_("AIS class A static")},
+  {129809, N_("AIS class B static A")}, {129810, N_("AIS class B static B")},
+  {130306, N_("Wind")}, {130310, N_("Environment (outside)")}, {130311, N_("Environment")},
+  {130312, N_("Temperature")}, {130313, N_("Humidity")}, {130314, N_("Pressure")}, {130316, N_("Temperature ext")},
+  {130577, N_("Direction data")},
 };
 const char *n2kPgnName(uint32_t pgn) {
   for (const auto &p : PGN_NAMES) if (p.pgn == pgn) return p.name;
-  if (pgn >= 65280 && pgn <= 65535) return "Proprietary";
-  if (pgn >= 130816) return "Proprietary";
+  if (pgn >= 65280 && pgn <= 65535) return N_("Proprietary");
+  if (pgn >= 130816) return N_("Proprietary");
   return "";
 }
 
@@ -140,7 +141,7 @@ void n2kSet(N2kQty q, uint8_t inst, uint8_t sub, double v, uint8_t src) {
   }
   portEXIT_CRITICAL(&s_mux);
 #if N2K_DEBUG_SERIAL >= 1
-  USBSerial.printf("[N2K] %s[%u/%u] = %.4f %s (src %u)\n", n2kQtyName(q), inst, sub, v, n2kQtyUnit(q), src);
+  serf("[N2K] %s[%u/%u] = %.4f %s (src %u)\n", n2kQtyName(q), inst, sub, v, n2kQtyUnit(q), src);
 #endif
 }
 
@@ -218,10 +219,10 @@ bool n2kSeenCopy(int i, N2kSeenPgn &out) {
 
 // ---------------------------------------------------------------- tanks
 static const char *FLUID_NAMES[] = {
-  "Fuel", "Fresh water", "Grey water", "Live well", "Oil", "Black water", "Gasoline"
+  N_("Fuel"), N_("Fresh water"), N_("Grey water"), N_("Live well"), N_("Oil"), N_("Black water"), N_("Gasoline")
 };
 
-const char *n2kFluidName(uint8_t ft) { return ft < 7 ? FLUID_NAMES[ft] : "Tank"; }
+const char *n2kFluidName(uint8_t ft) { return ft < 7 ? FLUID_NAMES[ft] : N_("Tank"); }
 bool n2kFluidIsWaste(uint8_t ft) { return ft == 2 || ft == 5; }
 
 static int addTank(uint8_t ft, uint8_t inst, const char *defName, bool configured) {

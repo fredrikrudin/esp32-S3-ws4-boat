@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // ui_n2k_settings.cpp
 #include <stdio.h>
 #include <stdlib.h>
@@ -25,7 +26,7 @@ static uint32_t s_builtLimVer = 0;
 static lv_obj_t *s_ov = nullptr, *s_kb, *s_err, *s_ta[6];
 static uint8_t s_eq, s_ei, s_es;
 // field order in the grid: left column = low side, right column = high side
-static const char *FIELD_NAME[6] = { "Gauge min", "Gauge max", "Warn low", "Warn high", "Alarm low", "Alarm high" };
+static const char *FIELD_NAME[6] = { N_("Gauge min"), N_("Gauge max"), N_("Warn low"), N_("Warn high"), N_("Alarm low"), N_("Alarm high") };
 
 // ------------------------------------------------------------------ helpers
 static lv_obj_t *box(lv_obj_t *parent, lv_coord_t w, lv_coord_t h, uint32_t bg) {
@@ -48,23 +49,36 @@ static lv_obj_t *label(lv_obj_t *parent, const char *txt, const lv_font_t *f, ui
   return l;
 }
 
+/* What a value is, in the chosen language */
 static void chanName(uint8_t q, uint8_t inst, uint8_t sub, char *b, size_t n) {
   if (q == Q_TANK_LEVEL || q == Q_TANK_CAP) {
-    const char *tn = n2kFluidName(sub);
+    char tn[32];
+    strlcpy(tn, tr(n2kFluidName(sub)), sizeof(tn));
     for (int i = 0; i < n2kTankCount(); i++) {
       N2kTank *t = n2kTankAt(i);
-      if (t->fluidType == sub && t->instance == inst) { tn = t->name; break; }
+      if (t->fluidType == sub && t->instance == inst) { uiTankName(t, tn, sizeof(tn)); break; }
     }
-    snprintf(b, n, "%s - %s", tn, q == Q_TANK_LEVEL ? "level" : "capacity");
+    snprintf(b, n, "%s - %s", tn, q == Q_TANK_LEVEL ? TR("level") : TR("capacity"));
   } else if (q >= Q_ENG_RPM && q <= Q_ENG_STATUS2) {
-    snprintf(b, n, "%s  (engine #%u)", n2kQtyLabel(q), inst);
+    snprintf(b, n, TR("%s  (engine #%u)"), tr(n2kQtyLabel(q)), inst);
   } else if (q == Q_TEMP) {
-    snprintf(b, n, "Temperature src %u #%u", sub, inst);
+    snprintf(b, n, TR("Temperature src %u #%u"), sub, inst);
   } else if (q == Q_BATT_V || q == Q_BATT_A || q == Q_SEA_TEMP) {
-    snprintf(b, n, "%s #%u", n2kQtyLabel(q), inst);
+    snprintf(b, n, "%s #%u", tr(n2kQtyLabel(q)), inst);
   } else {
-    snprintf(b, n, "%s", n2kQtyLabel(q));
+    snprintf(b, n, "%s", tr(n2kQtyLabel(q)));
   }
+}
+
+/* n2kDeviceLabel(), in the chosen language (the web page's JSON keeps English) */
+static void deviceName(uint8_t src, char *buf, size_t n) {
+  N2kDevice d;
+  if (!n2kDeviceCopy(src, d)) { snprintf(buf, n, TR("Device %u"), src); return; }
+  const char *m = n2kMfrName(d.mfr);
+  if (d.model[0] && m)  snprintf(buf, n, "%s (%s)", d.model, m);
+  else if (d.model[0])  snprintf(buf, n, "%s", d.model);
+  else if (m)           snprintf(buf, n, TR("%s device"), m);
+  else                  snprintf(buf, n, TR("Mfr %u device"), d.mfr);
 }
 
 static void fmtValue(uint8_t q, double v, char *b, size_t n) {
@@ -151,8 +165,8 @@ static void openEditor(uint8_t q, uint8_t inst, uint8_t sub) {
 
   char name[48], title[80];
   chanName(q, inst, sub, name, sizeof(name));
-  snprintf(title, sizeof(title), "%s  [%s]%s", name, n2kQtyUnit(q),
-           n2kLimitsIsCustom(q, inst, sub) ? "  - custom" : "  - default");
+  snprintf(title, sizeof(title), "%s  [%s]  - %s", name, n2kQtyUnit(q),
+           n2kLimitsIsCustom(q, inst, sub) ? TR("custom") : TR("default"));
   lv_obj_t *t = label(p, title, UI_FONT_M, 0xFFFFFF);
   lv_obj_set_width(t, lv_pct(100));
   lv_label_set_long_mode(t, LV_LABEL_LONG_DOT);
@@ -175,7 +189,7 @@ static void openEditor(uint8_t q, uint8_t inst, uint8_t sub) {
     lv_obj_add_event_cb(s_ta[i], onTaReady, LV_EVENT_READY, nullptr);
   }
 
-  s_err = label(p, "Empty warn/alarm field = off", UI_FONT_S, 0xE0A020);
+  s_err = label(p, "Empty warn/alarm field = off", UI_FONT_S, 0xE0A020);  // replaced by an error on Save
   lv_obj_set_width(s_err, lv_pct(100));
 
   lv_obj_t *btns = box(p, lv_pct(100), 42, 0);
@@ -239,7 +253,7 @@ static void build() {
 
     // ---- device header
     lv_obj_t *dev = box(s_list, lv_pct(100), 40, COL_DEV);
-    n2kDeviceLabel(src, b1, sizeof(b1));
+    deviceName(src, b1, sizeof(b1));
     lv_obj_t *dl = label(dev, b1, UI_FONT_M, 0xFFFFFF);
     lv_obj_align(dl, LV_ALIGN_LEFT_MID, 2, 0);
     snprintf(b2, sizeof(b2), "src %u", src);
@@ -258,10 +272,10 @@ static void build() {
       uint32_t pgn = pgns[pi];
       lv_obj_t *ph = box(s_list, lv_pct(100), 26, 0);
       lv_obj_set_style_pad_left(ph, 12, 0);
-      const char *pn = n2kPgnName(pgn);
+      const char *pn = tr(n2kPgnName(pgn));
       snprintf(b1, sizeof(b1), "PGN %lu  %s", (unsigned long)pgn, pn);
       lv_obj_align(label(ph, b1, UI_FONT_S, 0x9CC8F0), LV_ALIGN_LEFT_MID, 0, 0);
-      snprintf(b2, sizeof(b2), "%lu msg", (unsigned long)counts[pi]);
+      snprintf(b2, sizeof(b2), TR("%lu msg"), (unsigned long)counts[pi]);
       lv_obj_align(label(ph, b2, UI_FONT_S, COL_DIM), LV_ALIGN_RIGHT_MID, 0, 0);
 
       // values decoded from this PGN by this device
@@ -337,6 +351,7 @@ static void onBack(lv_event_t *) {
 void ui_n2k_show_screen() {
   if (!s_scr) {
     s_scr = lv_obj_create(nullptr);
+    ui_font_apply(s_scr);  // a screen of its own: give it the translated font
     s_withBack = true;
     ui_n2k_settings_create(s_scr);
   }
@@ -356,11 +371,14 @@ void ui_n2k_settings_create(lv_obj_t *tab) {
   lv_obj_set_style_pad_all(hdr, 0, 0);
   if (s_withBack) {
     lv_obj_t *bb = lv_btn_create(hdr);
-    lv_obj_set_size(bb, 90, 38);
+    lv_obj_set_size(bb, LV_SIZE_CONTENT, 38);  // "Tillbaka" is wider than "Back"
+    lv_obj_set_style_min_width(bb, 90, 0);
+    lv_obj_set_style_pad_hor(bb, 10, 0);
     lv_obj_align(bb, LV_ALIGN_LEFT_MID, 0, 0);
     lv_obj_add_event_cb(bb, onBack, LV_EVENT_CLICKED, nullptr);
     lv_obj_center(label(bb, LV_SYMBOL_LEFT " Back", UI_FONT_M, 0xFFFFFF));
-    lv_obj_align(label(hdr, "NMEA 2000", UI_FONT_L, 0xFFFFFF), LV_ALIGN_LEFT_MID, 102, 0);
+    lv_obj_update_layout(bb);
+    lv_obj_align(label(hdr, "NMEA 2000", UI_FONT_L, 0xFFFFFF), LV_ALIGN_LEFT_MID, lv_obj_get_width(bb) + 12, 0);
   } else {
     lv_obj_align(label(hdr, "NMEA 2000 devices", UI_FONT_L, 0xFFFFFF), LV_ALIGN_LEFT_MID, 2, 0);
   }

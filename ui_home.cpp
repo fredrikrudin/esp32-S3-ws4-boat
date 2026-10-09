@@ -1,7 +1,8 @@
+// esp32-S3-ws4-boat v1.0
 /* Start page (⌂ tab) for the boat:
  *
  *   +------------------------------------------------+
- *   | 14:32 Thu 24 Sep                         N2K ● |  <- becomes the alarm banner
+ *   | 14:32 Thu 24 Sep                 WiFi ▂▄▆ N2K ● |  <- becomes the alarm banner
  *   | DEPTH  4.8 m               | SPEED  5.6 kn      |
  *   | (RPM gauge) (Coolant gauge) | ENGINE Babord RUN |   one engine
  *   | (Port RPM)  (Starboard RPM) | ENGINES both      |   twin engines (Settings -> NMEA 2000)
@@ -13,7 +14,9 @@
  * is outlined in the same colour. A new alarm wakes the screen saver and brings
  * this page up (unless the Engine tab is shown). Tap the banner to acknowledge:
  * it stops blinking but stays until the value is back in range.
- * Limits come from n2k_limits (Settings -> NMEA 2000), battery SOC from START_SOC_*.
+ * Limits come from n2k_limits (Settings -> NMEA 2000). The banner also shows the
+ * warnings from alarms.cpp (battery state of charge, Victron devices, wind, WiFi,
+ * SD card), which follow Settings -> Device -> Alarms, as does waking the screen.
  */
 #include "app.h"
 #include <ctype.h>
@@ -26,8 +29,6 @@
 #include "n2k_settings.h"
 #include "n2k_bus.h"
 
-#define START_SOC_WARN 20   // battery state of charge warning below this %
-#define START_SOC_ALARM 10  // ... alarm below this %
 #define START_TANKS 4       // tanks shown on the start page (the Tanks tab shows all)
 
 #define COL_CARD 0x16263A
@@ -47,6 +48,7 @@
 
 /* ------------------------------------------------------------------ widgets */
 static lv_obj_t *hdr, *lbl_time, *lbl_date, *dot_n2k;
+static lv_obj_t *wifi_icon, *wifi_bar[4];
 static lv_obj_t *banner, *lbl_banner, *lbl_banner_more;
 static lv_obj_t *c_depth, *v_depth, *u_depth, *t_depth_ref;
 static lv_obj_t *c_speed, *v_speed, *u_speed, *t_speed_ref, *l_speed_sub;
@@ -130,12 +132,13 @@ static void value_color(lv_obj_t *v, lv_obj_t *u, UiLevel l) {
 /* ------------------------------------------------------------------ alerts */
 struct StartAlert {
   UiLevel lvl;
-  char text[40];
+  bool n2k;  // from NMEA 2000 (alarms.cpp logs its own)
+  char text[48];
 };
-static StartAlert alerts[12];
+static StartAlert alerts[12 + MAX_ALARMS];
 static int n_alerts;
-static char ack_text[40] = "";     // acknowledged top message
-static char last_alarm[40] = "";   // last top alarm, to spot a new one
+static char ack_text[64] = "";     // acknowledged top message
+static char last_alarm[48] = "";   // last top alarm, to spot a new one
 static bool blink_on = false;
 
 static void alert(UiLevel l, const char *fmt, ...) {
@@ -143,10 +146,66 @@ static void alert(UiLevel l, const char *fmt, ...) {
   if (n_alerts >= (int)(sizeof(alerts) / sizeof(alerts[0]))) return;
   va_list ap;
   va_start(ap, fmt);
-  vsnprintf(alerts[n_alerts].text, sizeof(alerts[n_alerts].text), fmt, ap);
+  vsnprintf(alerts[n_alerts].text, sizeof(alerts[n_alerts].text), tr(fmt), ap);
   va_end(ap);
   alerts[n_alerts].lvl = l;
+  alerts[n_alerts].n2k = true;
   n_alerts++;
+}
+
+/* The warnings from alarms.cpp, after the NMEA 2000 ones */
+static void add_general_alarms() {
+  Alarm al[MAX_ALARMS];
+  int n = alarms_get(al, MAX_ALARMS);
+  for (int i = 0; i < n && n_alerts < (int)(sizeof(alerts) / sizeof(alerts[0])); i++) {
+    StartAlert &a = alerts[n_alerts++];
+    a.lvl = al[i].level == ALARM_LEVEL_ALARM ? UI_ALARM : UI_WARN;
+    a.n2k = false;
+    strlcpy(a.text, al[i].text, sizeof(a.text));
+  }
+}
+
+/* WiFi indicator in the header: the WiFi symbol and four signal bars,
+   grey with no bars lit when not connected (as on the caravan display) */
+static void make_wifi_indicator(lv_obj_t *parent) {
+  lv_obj_t *box = lv_obj_create(parent);
+  lv_obj_remove_style_all(box);
+  lv_obj_set_size(box, 52, 20);
+  lv_obj_align(box, LV_ALIGN_RIGHT_MID, -58, 0);
+  lv_obj_clear_flag(box, LV_OBJ_FLAG_SCROLLABLE);
+  lv_obj_clear_flag(box, LV_OBJ_FLAG_CLICKABLE);
+
+  wifi_icon = lv_label_create(box);
+  lv_label_set_text(wifi_icon, LV_SYMBOL_WIFI);
+  lv_obj_set_style_text_color(wifi_icon, lv_color_hex(0x5A5A5A), 0);
+  lv_obj_align(wifi_icon, LV_ALIGN_LEFT_MID, 0, 0);
+
+  for (int i = 0; i < 4; i++) {
+    lv_obj_t *b = lv_obj_create(box);
+    lv_obj_remove_style_all(b);
+    int h = 5 + i * 4;  // 5, 9, 13, 17 px
+    lv_obj_set_size(b, 4, h);
+    lv_obj_align(b, LV_ALIGN_BOTTOM_LEFT, 28 + i * 6, -1);
+    lv_obj_set_style_radius(b, 1, 0);
+    lv_obj_set_style_bg_opa(b, LV_OPA_COVER, 0);
+    lv_obj_set_style_bg_color(b, lv_color_hex(0x3A3A3A), 0);
+    wifi_bar[i] = b;
+  }
+}
+
+static void update_wifi_indicator() {
+  LOCK();
+  bool up = g.wifi_up;
+  int rssi = g.wifi_rssi;
+  UNLOCK();
+  int lit = !up ? 0 : rssi >= -55 ? 4 : rssi >= -65 ? 3 : rssi >= -75 ? 2 : 1;
+  uint32_t col = lit >= 3 ? 0x2ECC71 : lit == 2 ? 0xF1C40F : 0xE74C3C;  // green, yellow, red
+  static int last_lit = -1;
+  if (lit == last_lit) return;
+  last_lit = lit;
+  lv_obj_set_style_text_color(wifi_icon, lv_color_hex(up ? 0xFFFFFF : 0x5A5A5A), 0);
+  for (int i = 0; i < 4; i++)
+    lv_obj_set_style_bg_color(wifi_bar[i], lv_color_hex(i < lit ? col : 0x3A3A3A), 0);
 }
 
 static void banner_cb(lv_event_t *e) {
@@ -154,13 +213,13 @@ static void banner_cb(lv_event_t *e) {
 }
 
 static const char *ENG_FAULT1[16] = {
-  "CHECK ENGINE", "ENGINE OVER TEMP", "LOW OIL PRESSURE", "LOW OIL LEVEL", "LOW FUEL PRESSURE",
-  "LOW SYSTEM VOLTAGE", "LOW COOLANT", "WATER FLOW", "WATER IN FUEL", "CHARGE WARNING",
-  "PREHEAT", "HIGH BOOST", "REV LIMIT", "EGR SYSTEM", "THROTTLE SENSOR", "EMERGENCY STOP"
+  N_("CHECK ENGINE"), N_("ENGINE OVER TEMP"), N_("LOW OIL PRESSURE"), N_("LOW OIL LEVEL"), N_("LOW FUEL PRESSURE"),
+  N_("LOW SYSTEM VOLTAGE"), N_("LOW COOLANT"), N_("WATER FLOW"), N_("WATER IN FUEL"), N_("CHARGE WARNING"),
+  N_("PREHEAT"), N_("HIGH BOOST"), N_("REV LIMIT"), N_("EGR SYSTEM"), N_("THROTTLE SENSOR"), N_("EMERGENCY STOP")
 };
 static const char *ENG_FAULT2[8] = {
-  "ENGINE WARNING 1", "ENGINE WARNING 2", "POWER REDUCED", "MAINTENANCE NEEDED", "ENGINE COMM ERROR",
-  "SUB THROTTLE", "NEUTRAL START", "ENGINE SHUTTING DOWN"
+  N_("ENGINE WARNING 1"), N_("ENGINE WARNING 2"), N_("POWER REDUCED"), N_("MAINTENANCE NEEDED"), N_("ENGINE COMM ERROR"),
+  N_("SUB THROTTLE"), N_("NEUTRAL START"), N_("ENGINE SHUTTING DOWN")
 };
 
 /* ------------------------------------------------------------------ engines */
@@ -176,8 +235,8 @@ static void eval_engine(uint8_t e, const char *name, EngView &v) {
   memset(&v, 0, sizeof(v));
   char pre[20] = "";
   if (name) {
-    snprintf(pre, sizeof(pre), "%s ", name);
-    for (char *p = pre; *p; p++) *p = toupper(*p);
+    snprintf(pre, sizeof(pre), "%s ", tr(name));
+    for (char *p = pre; *p; p++) *p = toupper((unsigned char)*p);  // ASCII letters only; UTF-8 is left alone
   }
 
   v.has_rpm = n2kGet(Q_ENG_RPM, e, 0, v.rpm);
@@ -190,7 +249,7 @@ static void eval_engine(uint8_t e, const char *name, EngView &v) {
   if (!v.running) b1 &= ~((1u << 9) | (1u << 10));  // charge / preheat lamps are normal at key-on
   for (int i = 0; i < 16 && !v.fault; i++) if (b1 & (1u << i)) v.fault = ENG_FAULT1[i];
   for (int i = 0; i < 8 && !v.fault; i++) if (b2 & (1u << i)) v.fault = ENG_FAULT2[i];
-  if (v.fault) alert(UI_ALARM, "%s%s", pre, v.fault);
+  if (v.fault) alert(UI_ALARM, "%s%s", pre, tr(v.fault));
 
   if (v.has_rpm) {
     v.rpm_lvl = uiLevelFrom(n2kLimitsEval(n2kLimitsGet(Q_ENG_RPM, e, 0), v.rpm));
@@ -228,7 +287,7 @@ static void show_rpm(UiGauge &g, const EngView &v) {
 static void show_status(lv_obj_t *l, const EngView &v, bool big) {
   char b[48];
   if (v.fault) {
-    snprintf(b, sizeof(b), LV_SYMBOL_WARNING " %s", big ? v.fault : "FAULT");
+    snprintf(b, sizeof(b), LV_SYMBOL_WARNING " %s", big ? tr(v.fault) : TR("FAULT"));
     set_label(l, b);
     lv_obj_set_style_text_color(l, lv_color_white(), 0);
   } else if (v.running) {
@@ -267,6 +326,7 @@ void build_home_tab() {
   lv_obj_align(dot_n2k, LV_ALIGN_RIGHT_MID, -4, 0);
   lv_obj_t *n2k_txt = mk_label(hdr, UI_FONT_S, COL_TITLE, "N2K");
   lv_obj_align(n2k_txt, LV_ALIGN_RIGHT_MID, -20, 0);
+  make_wifi_indicator(hdr);
 
   /* ---- alarm banner, same place as the header */
   banner = lv_obj_create(t);
@@ -302,8 +362,8 @@ void build_home_tab() {
   y += TOP_H + GAP;
 
   /* ---- engine: RPM + coolant gauges (one engine) or port + starboard RPM (twin), + engine card */
-  const UiGaugeCfg rpm_cfg = { "RPM x100", 0.01f, 240, MID_H, UI_FONT_L, UI_FONT_S, 0 };
-  const UiGaugeCfg cool_cfg = { "Coolant \xC2\xB0""C", 1, 240, MID_H, UI_FONT_L, UI_FONT_S, 0 };
+  const UiGaugeCfg rpm_cfg = { N_("RPM x100"), 0.01f, 240, MID_H, UI_FONT_L, UI_FONT_S, 0 };
+  const UiGaugeCfg cool_cfg = { N_("Coolant \xC2\xB0""C"), 1, 240, MID_H, UI_FONT_L, UI_FONT_S, 0 };
   lv_obj_t *gbox = lv_obj_create(t);   // flex row: hidden gauges drop out, so the order is
   lv_obj_remove_style_all(gbox);       // [rpm][coolant] or [port rpm][starboard rpm]
   lv_obj_set_pos(gbox, PAD, y);
@@ -330,7 +390,7 @@ void build_home_tab() {
   lv_label_set_long_mode(l_eng_status, LV_LABEL_LONG_DOT);
   lv_obj_set_style_text_align(l_eng_status, LV_TEXT_ALIGN_CENTER, 0);
   lv_obj_align(l_eng_status, LV_ALIGN_TOP_MID, 0, 56);
-  const char *rows[3] = { "Oil", "Alt", "Hours" };
+  const char *rows[3] = { N_("Oil"), N_("Alt"), N_("Hours") };
   lv_obj_t **vals[3] = { &l_eng_oil, &l_eng_alt, &l_eng_hours };
   for (int i = 0; i < 3; i++) {
     lv_obj_t *k = mk_label(box_single, UI_FONT_S, COL_TITLE, rows[i]);
@@ -417,15 +477,13 @@ static void build_tanks() {
     lv_obj_set_style_text_align(tk_pct[i], LV_TEXT_ALIGN_CENTER, 0);
     lv_obj_set_pos(tk_pct[i], cx - slot / 2, 80);
 
-    char nm[12];                                   // first word: "Fresh water" -> "Fresh"
-    strlcpy(nm, tk->name, sizeof(nm));
-    char *sp = strchr(nm, ' ');
-    if (sp) *sp = 0;
+    char nm[24];  // first word: "Fresh water" -> "Fresh"
+    uiTankName(tk, nm, sizeof(nm), true);
     tk_name[i] = mk_label(c_tanks, UI_FONT_S, COL_TITLE, nm);
-    lv_obj_set_width(tk_name[i], slot);
-    lv_label_set_long_mode(tk_name[i], LV_LABEL_LONG_CLIP);
+    lv_obj_set_width(tk_name[i], slot - 2);
+    lv_label_set_long_mode(tk_name[i], LV_LABEL_LONG_DOT);  // "Bränsle" in a narrow column: "Brä..."
     lv_obj_set_style_text_align(tk_name[i], LV_TEXT_ALIGN_CENTER, 0);
-    lv_obj_set_pos(tk_name[i], cx - slot / 2, 94);
+    lv_obj_set_pos(tk_name[i], cx - slot / 2 + 1, 94);
   }
 }
 
@@ -443,6 +501,7 @@ void home_timer_cb(lv_timer_t *t) {
   lv_obj_align_to(lbl_date, lbl_time, LV_ALIGN_OUT_RIGHT_BOTTOM, 10, -2);
   lv_obj_set_style_bg_color(dot_n2k, n2kBusOk() ? lv_palette_main(LV_PALETTE_GREEN)
                                                 : lv_palette_main(LV_PALETTE_RED), 0);
+  update_wifi_indicator();
 
   /* ---- engines first: their alarms matter most */
   const bool twin = n2kSettings.twin;
@@ -454,7 +513,7 @@ void home_timer_cb(lv_timer_t *t) {
       lv_obj_clear_flag(g_rpm2.meter, LV_OBJ_FLAG_HIDDEN);
       lv_obj_add_flag(box_single, LV_OBJ_FLAG_HIDDEN);
       lv_obj_clear_flag(box_twin, LV_OBJ_FLAG_HIDDEN);
-      set_label(g_rpm.title, n2kSettings.portName);    // port on the left
+      set_label(g_rpm.title, n2kSettings.portName);    // port on the left (translated: "Port" -> "Babord")
       set_label(g_rpm2.title, n2kSettings.stbdName);   // starboard on the right
       set_label(tw_name[0], n2kSettings.portName);
       set_label(tw_name[1], n2kSettings.stbdName);
@@ -498,9 +557,9 @@ void home_timer_cb(lv_timer_t *t) {
 
   if (!twin) {
     const EngView &a = ev[0];
-    set_label(l_eng_name, n2kSettings.engName);
+    set_label(l_eng_name, n2kSettings.engName);  // translated: the default "Engine" is "Motor" in Swedish
     show_status(l_eng_status, a, true);
-    if (a.has_oil) { snprintf(b, sizeof(b), "%.1f bar", a.oil); set_label(l_eng_oil, b); }
+    if (a.has_oil) { snprintf(b, sizeof(b), TR("%.1f bar"), a.oil); set_label(l_eng_oil, b); }
     else set_label(l_eng_oil, "--");
     value_color(l_eng_oil, NULL, a.has_oil ? a.oil_lvl : UI_OK);
     if (a.has_alt) { snprintf(b, sizeof(b), "%.1f V", a.alt); set_label(l_eng_alt, b); }
@@ -515,7 +574,7 @@ void home_timer_cb(lv_timer_t *t) {
       /* coolant (the gauge is gone in twin mode) and oil pressure */
       char c1[16] = "--", c2[16] = "--";
       if (a.has_cool) snprintf(c1, sizeof(c1), "%.0f\xC2\xB0""C", a.cool);
-      if (a.has_oil) snprintf(c2, sizeof(c2), "%.1f bar", a.oil);
+      if (a.has_oil) snprintf(c2, sizeof(c2), TR("%.1f bar"), a.oil);
       snprintf(b, sizeof(b), "%s   %s", c1, c2);
       set_label(tw_vals[i], b);
       UiLevel l = a.cool_lvl > a.oil_lvl ? a.cool_lvl : a.oil_lvl;
@@ -527,7 +586,7 @@ void home_timer_cb(lv_timer_t *t) {
   card_level(c_eng, any_fault ? UI_OK : eng_lvl);   // a fault already paints the whole card
 
   /* ---- depth (with the sounder's offset, as on the Nav tab) */
-  double off;
+  double v, off;
   if (n2kGet(Q_DEPTH, 0, 0, v)) {
     bool has_off = n2kGet(Q_DEPTH_OFFSET, 0, 0, off, 30000);
     double d = has_off ? v + off : v;
@@ -560,7 +619,7 @@ void home_timer_cb(lv_timer_t *t) {
     value_color(v_speed, u_speed, UI_STALE);
   }
   b[0] = 0;
-  if (has_stw && has_sog) snprintf(b, sizeof(b), "SOG %.1f kn", sog);
+  if (has_stw && has_sog) snprintf(b, sizeof(b), TR("SOG %.1f kn"), sog);
   if (has_cog) snprintf(b + strlen(b), sizeof(b) - strlen(b), "%sCOG %03.0f\xC2\xB0", b[0] ? "   " : "", cog);
   set_label(l_speed_sub, b);
 
@@ -583,14 +642,14 @@ void home_timer_cb(lv_timer_t *t) {
   }
 
   if (!isnan(soc)) {
-    UiLevel l = soc < START_SOC_ALARM ? UI_ALARM : soc < START_SOC_WARN ? UI_WARN : UI_OK;
+    /* thresholds from Settings -> Device -> Alarms; the banner message comes from alarms.cpp */
+    UiLevel l = soc <= alarm_cfg.soc_alarm ? UI_ALARM : soc <= alarm_cfg.soc_warn ? UI_WARN : UI_OK;
     snprintf(b, sizeof(b), "%.0f%%", soc);
     set_label(v_soc, b);
     value_color(v_soc, NULL, l);
     lv_bar_set_value(bar_soc, (int)(soc + 0.5f), LV_ANIM_OFF);
     lv_obj_set_style_bg_color(bar_soc, l == UI_OK ? lv_color_hex(0x38A9F5) : uiLevelColor(l), LV_PART_INDICATOR);
     card_level(c_batt, l);
-    alert(l, "BATTERY %.0f%%", soc);
   } else {
     set_label(v_soc, "--");
     value_color(v_soc, NULL, UI_STALE);
@@ -637,9 +696,9 @@ void home_timer_cb(lv_timer_t *t) {
       set_label(tk_pct[i], b);
       value_color(tk_pct[i], NULL, l);
       if (l == UI_ALARM) {
-        char nm[24];
-        strlcpy(nm, tk->name, sizeof(nm));
-        for (char *p = nm; *p; p++) *p = toupper(*p);
+        char nm[32];
+        uiTankName(tk, nm, sizeof(nm));
+        for (char *p = nm; *p; p++) *p = toupper((unsigned char)*p);
         alert(l, "%s %.0f%%", nm, pct);
       }
       if (l > tanks_lvl) tanks_lvl = l;
@@ -652,6 +711,7 @@ void home_timer_cb(lv_timer_t *t) {
   card_level(c_tanks, tanks_lvl);
 
   /* ---- banner: most important message, alarms before warnings */
+  add_general_alarms();
   int top = -1;
   for (int i = 0; i < n_alerts && top < 0; i++) if (alerts[i].lvl == UI_ALARM) top = i;
   for (int i = 0; i < n_alerts && top < 0; i++) if (alerts[i].lvl == UI_WARN) top = i;
@@ -666,10 +726,13 @@ void home_timer_cb(lv_timer_t *t) {
   const StartAlert &a = alerts[top];
   snprintf(b, sizeof(b), LV_SYMBOL_WARNING "  %s", a.text);
   set_label(lbl_banner, b);
-  if (n_alerts > 1) snprintf(b, sizeof(b), "+%d more", n_alerts - 1);
+  if (n_alerts > 1) snprintf(b, sizeof(b), TR("+%d more"), n_alerts - 1);
   else b[0] = 0;
   bool acked = strcmp(ack_text, lv_label_get_text(lbl_banner)) == 0;
-  if (a.lvl == UI_ALARM && !acked) strlcat(b, n_alerts > 1 ? "   tap = ack" : "tap = ack", sizeof(b));
+  if (a.lvl == UI_ALARM && !acked) {
+    if (n_alerts > 1) strlcat(b, "   ", sizeof(b));
+    strlcat(b, TR("tap = ack"), sizeof(b));
+  }
   set_label(lbl_banner_more, b);
   lv_obj_add_flag(hdr, LV_OBJ_FLAG_HIDDEN);
   lv_obj_clear_flag(banner, LV_OBJ_FLAG_HIDDEN);
@@ -679,11 +742,11 @@ void home_timer_cb(lv_timer_t *t) {
   lv_obj_set_style_bg_color(banner, lv_color_hex(col), 0);
 
   /* a new, unacknowledged alarm: wake the display and show this page */
-  if (a.lvl == UI_ALARM && !acked) {
+  if (a.lvl == UI_ALARM && !acked && alarm_cfg.wake_saver) {  // Settings -> Device -> Alarms
     lv_disp_trig_activity(NULL);                     // keeps the screen saver away
     if (strcmp(last_alarm, a.text) != 0) {
       strlcpy(last_alarm, a.text, sizeof(last_alarm));
-      logf("ALARM: %s", a.text);
+      if (a.n2k) log_fault("ALARM: %s", a.text);   // alarms.cpp logs its own
       saver_wake();
       if (ui_active_tab() != 2) ui_show_tab(0);      // leave the Engine tab alone: it shows it too
     }

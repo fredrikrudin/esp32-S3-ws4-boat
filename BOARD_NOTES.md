@@ -1,3 +1,4 @@
+<!-- esp32-S3-ws4-boat v1.0 -->
 # Board notes: Waveshare ESP32-S3-Touch-LCD-4 (V4)
 
 Things that cost time to find out, so the next project doesn't have to.
@@ -34,6 +35,17 @@ and looks like a dead board.
 
 **CH32 registers read back as 0x00** (direction and output), so don't trust a read-modify-write.
 `WS_CH32_IO::OUT_DISPLAY_ON` keeps the display and touch alive; keep those bits set in any write.
+
+**The onboard LiPo can be measured**: `WS_CH32_IO::readBatteryVoltage(Wire, &v, &raw, 4)` via the CH32's
+ADC (divider 3.0, reference 3.3 V). Below ~2.5 V means no cell is connected. There is no
+charge-status line, so charging has to be inferred (a cell at 4.15 V or above is on charge).
+Pass the `raw` pointer: leaving it at its `nullptr` default crashes with `LoadProhibited`,
+`EXCVADDR 0x00000000`.
+
+**SW6106 power bank controller (0x3C), on some revisions**: switches its output off under a
+light load, which is exactly what the board looks like on battery with the screen dimmed and the
+radios off. Write 0x0A to register 0x38 once, then 0x01 to register 0x03 about once a second as a
+keep-alive. Not present on every board; an I2C scan settles it.
 
 **Touch (GT911) sometimes doesn't answer after an upload.** A full power cycle clears it.
 Not a code fault; don't chase it.
@@ -72,6 +84,8 @@ What helped, in order of effect:
 
 What didn't help: **NimBLE role trimming and `MEM_ALLOC_MODE_EXTERNAL`** gained 0.3 kB.
 Most of Bluetooth's 66 kB is the radio controller, which is precompiled into the core.
+Worse, `CONFIG_BT_NIMBLE_MAX_CONNECTIONS 1` **crashes the board** as soon as a second device
+is connected (a battery held open plus a Shelly, say). Leave `nimconfig.h` alone.
 
 **HTTPS is not realistic** here: it needs 40+ kB in one block. Use plain HTTP for public data
 (Open-Meteo works fine over HTTP). `connection refused (-1)` with low free RAM means exactly this.
@@ -107,6 +121,8 @@ Most of Bluetooth's 66 kB is the radio controller, which is precompiled into the
   characteristics; 4-byte big-endian length, then JSON in MTU-sized chunks. Requires bonding.
 - **Scanning**: passive scan misses device names; use active scan if you need them.
   Pause scanning while WiFi joins, or the handshake can time out.
+- **One connection at a time**: guard every connect with a shared mutex. Two tasks connecting
+  at once, or more connections than `CONFIG_BT_NIMBLE_MAX_CONNECTIONS`, takes the board down.
 
 ## Arduino IDE
 
@@ -115,11 +131,20 @@ Most of Bluetooth's 66 kB is the radio controller, which is precompiled into the
 - **Two `.ino` files in one folder won't build**: both define `setup()`. Keep test sketches
   in their own folder.
 - `lv_conf.h` and `nimconfig.h` live in the libraries folder, are shared by every sketch,
-  and are lost when the library updates. Note your edits somewhere.
+  and are **silently overwritten when the library updates**. That happened here: the LVGL
+  pool moved back into internal RAM, the UI ran out of memory while building, and LVGL
+  crashed on a null pointer (`LoadProhibited`, `EXCVADDR 0x00000000`) inside `build_ui()`.
+  An older, known-good firmware crashed in exactly the same way, which is the giveaway that
+  the environment changed rather than the code. Print free memory and the pool setting at
+  every boot so this is visible in one line.
+  The same thing happens when another project installs its own `lv_conf.h`: a C3 board with
+  no PSRAM wants a 40 kB pool in internal RAM, which is nowhere near enough for a big UI on
+  this board. Keep one shared file that switches on `BOARD_HAS_PSRAM`
+  (see `lv_conf.example.h`).
 
 ## Habits that saved time here
 
-- **Log to three places**: Serial, a PSRAM ring buffer served at `/log`, and the TF card.
+- **Log to three places**: Serial, a PSRAM ring buffer served at `/log`, and the TF card. USB serial gets only faults (`log_fault()`) unless the serial monitor is switched on under Settings → Device → Debug; `/log` and the card always get everything.
   Reading a log on a phone beats carrying a laptop to the vehicle.
 - **Settings backup to the card** (`/settings.json`) makes an accidental flash erase harmless.
 - **A probe beats a guess**: when a bus won't come up, try every combination in code and log
@@ -170,6 +195,9 @@ failure message.
 **Pause BLE scanning while joining WiFi.** They share one radio; an active scan at 50% duty can
 make the association time out.
 
+**Charts without JavaScript**: generate inline `<svg>` with `<rect>` bars and a `<polyline>`.
+A 24-bar chart costs about 2 kB of HTML and renders anywhere, including old phones.
+
 **A web server in the loop task** (`WebServer`, `server.handleClient()`) is simplest and reads
 the same data the screen shows, with no extra locking. A page render takes a few milliseconds.
 
@@ -180,6 +208,17 @@ Windows; some Android versions don't resolve `.local`.
 `server.collectHeaders({"Cookie"})` to read it back. Enough to keep strangers on a campsite
 network out; not real security. HTTPS needs 40+ kB in one block, which this board hasn't got
 (see Memory).
+
+## Power and CPU
+
+- **WiFi modem sleep** (`WiFi.setSleep(true)`) costs nothing for a polled web page.
+- **`setCpuFrequencyMhz(80)`** while the screen sleeps; 80 MHz is the lowest that keeps
+  WiFi and Bluetooth running. Back to 240 on wake.
+- **Don't redraw hidden tabs.** With eight tabs updating once a second, most formatting was
+  for pixels nobody could see. A `tab_visible()` check in each timer removes it, but keep the
+  parts other pages depend on (device lists that Settings shows).
+- **A debug-log switch** matters: `Serial.print` inside a BLE callback blocks when nothing is
+  reading the port.
 
 ## Diagnostics
 

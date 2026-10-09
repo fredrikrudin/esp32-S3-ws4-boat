@@ -1,5 +1,9 @@
-/* Settings tab: WiFi, web page password, weather location, RuuviTags, NMEA 2000,
-   display, sensor scan interval, SD card. The Victron section lives in its own file. */
+// esp32-S3-ws4-boat v1.0
+/* Settings tab, in four pages: Connect (WiFi, web page, weather location),
+   Sensors (RuuviTags, Victron, scan interval), NMEA 2000, and Device (language,
+   display, SD card, power, starting screen, alarms, debug, about, system).
+   The Victron section lives in ui_victron_settings.cpp, the NMEA 2000 device list
+   and limit editor in ui_n2k_settings.cpp. */
 #include "app.h"
 #include "n2k_bus.h"
 #include "n2k_data.h"
@@ -19,6 +23,8 @@ static lv_obj_t *sl_bl, *lbl_bl, *sl_bl_saver, *lbl_bl_saver;
 static lv_obj_t *lbl_scan;
 static lv_obj_t *lbl_n2k;
 static lv_obj_t *lbl_sdlog, *lbl_csv, *dd_csv;
+static lv_obj_t *lbl_lipo;
+static lv_obj_t *lbl_alarm, *sl_soc_warn, *sl_soc_alarm, *sl_wind;
 static char dd_addr[MAX_TAGS][18];  // MAC for each row of the Ruuvi "Add" list
 static int dd_count = 0;
 
@@ -26,7 +32,7 @@ static int dd_count = 0;
 static void connect_now() {
   char ssid[33];
   lv_dropdown_get_selected_str(dd_ssid, ssid, sizeof(ssid));
-  if (!ssid[0] || !strcmp(ssid, NO_NET_TEXT) || !strcmp(ssid, NO_NET_FOUND)) {
+  if (!ssid[0] || !strcmp(ssid, TR(NO_NET_TEXT)) || !strcmp(ssid, TR(NO_NET_FOUND))) {
     lv_label_set_text(lbl_wifi_status, "Scan and choose a network first");
     return;
   }
@@ -55,8 +61,12 @@ static void update_web_label() {
   LOCK();
   strlcpy(name, g.web_name, sizeof(name));
   UNLOCK();
-  lv_label_set_text_fmt(lbl_web, "\"%s\" at http://%s.local/ on the same WiFi.\n%s", name, MDNS_NAME,
-                        has_pass ? "Password required." : "No password: anyone on the WiFi can view the page.");
+  if (!feat_web) {
+    lv_label_set_text(lbl_web, "Web server switched off. Nothing is served, and about 12 kB of memory is freed.");
+    return;
+  }
+  lv_label_set_text_fmt(lbl_web, "\"%s\" at http://%s.local/ on the same WiFi.\n%s%s", name, MDNS_NAME,
+                        has_pass ? TR("Password required.") : TR("No password: anyone on the WiFi can view the page."), "");
 }
 
 static void webpass_save_now() {
@@ -73,6 +83,12 @@ static void webpass_save_now() {
 
 static void webpass_save_cb(lv_event_t *e) {
   webpass_save_now();
+}
+
+static void web_enable_cb(lv_event_t *e) {
+  feat_web = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+  cmd_save_web = true;
+  update_web_label();
 }
 
 /* ---------- Location ---------- */
@@ -104,11 +120,11 @@ static void ruuvi_open_editor(const char *mac, int slot) {
   mac_short(mac, s);
   lv_label_set_text_fmt(lbl_ruuvi_edit_title, "Ruuvi %s  (%s)", s, mac);
   if (slot >= 0) strlcpy(name, ruuvi_cfg[slot].name, sizeof(name));
-  else snprintf(name, sizeof(name), "Ruuvi %s", s);
+  else snprintf(name, sizeof(name), TR("Ruuvi %s"), s);
   lv_textarea_set_text(ta_rname, name);
   lv_label_set_text(lbl_ruuvi_msg, "");
   lv_obj_clear_flag(ruuvi_editor, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_update_layout(tab_settings);
+  lv_obj_update_layout(lv_obj_get_parent(ruuvi_editor));
   lv_obj_scroll_to_view_recursive(ruuvi_editor, LV_ANIM_ON);
 }
 
@@ -160,7 +176,7 @@ static void ruuvi_save_now() {
   c.used = true;
   strlcpy(c.mac, ruuvi_edit_mac, sizeof(c.mac));
   if (name[0]) strlcpy(c.name, name, sizeof(c.name));
-  else snprintf(c.name, sizeof(c.name), "Ruuvi %s", s);
+  else snprintf(c.name, sizeof(c.name), TR("Ruuvi %s"), s);
   UNLOCK();
   cmd_save_ruuvi = true;
   ruuvi_close_editor();
@@ -217,9 +233,9 @@ void ruuvi_settings_refresh(const RuuviTag *copy, uint32_t now) {
     char s[8];
     mac_short(ruuvi_cfg[i].mac, s);
     if (t && t->has_temp && now - t->last_seen < 10UL * 60 * 1000)
-      snprintf(b, sizeof(b), "%s\nRuuvi %s  -  %.1f" DEG "C", ruuvi_cfg[i].name, s, t->temp);
+      snprintf(b, sizeof(b), TR("%s\nRuuvi %s  -  %.1f" DEG "C"), ruuvi_cfg[i].name, s, t->temp);
     else
-      snprintf(b, sizeof(b), "%s\nRuuvi %s  -  not heard", ruuvi_cfg[i].name, s);
+      snprintf(b, sizeof(b), TR("%s\nRuuvi %s  -  not heard"), ruuvi_cfg[i].name, s);
     set_label(ruuvi_list_lbl[i], b);
   }
 
@@ -237,15 +253,15 @@ void ruuvi_settings_refresh(const RuuviTag *copy, uint32_t now) {
     if (ruuvi_cfg_index(copy[i].addr) >= 0) continue;                          // already added
     char s[8], line[40];
     mac_short(copy[i].addr, s);
-    if (copy[i].has_temp) snprintf(line, sizeof(line), "%sRuuvi %s   %.1f" DEG, count ? "\n" : "", s, copy[i].temp);
-    else snprintf(line, sizeof(line), "%sRuuvi %s", count ? "\n" : "", s);
+    if (copy[i].has_temp) snprintf(line, sizeof(line), TR("%sRuuvi %s   %.1f" DEG), count ? "\n" : "", s, copy[i].temp);
+    else snprintf(line, sizeof(line), TR("%sRuuvi %s"), count ? "\n" : "", s);
     strlcat(opts, line, sizeof(opts));
     strlcpy(dd_addr[count], copy[i].addr, sizeof(dd_addr[count]));
     if (!strcmp(copy[i].addr, cur)) cur_idx = count;
     count++;
   }
   dd_count = count;
-  if (!count) strcpy(opts, "Searching...");
+  if (!count) strcpy(opts, TR("Searching..."));
   if (strcmp(opts, last_opts)) {
     strlcpy(last_opts, opts, sizeof(last_opts));
     lv_dropdown_set_options(dd_ruuvi, opts);
@@ -302,7 +318,7 @@ static void twin_cb(lv_event_t *e) {
 }
 
 static void n2k_timer_cb(lv_timer_t *t) {
-  if (!lv_obj_is_visible(lbl_n2k)) return;
+  if (!lbl_n2k || !lv_obj_is_visible(lbl_n2k) || !tab_visible(tab_settings)) return;
   int devs = 0;
   N2kSeenPgn sp;
   uint8_t seen[64];
@@ -312,13 +328,249 @@ static void n2k_timer_cb(lv_timer_t *t) {
     for (int k = 0; k < devs; k++) have |= seen[k] == sp.src;
     if (!have && devs < 64) seen[devs++] = sp.src;
   }
-  char b[160];
-  snprintf(b, sizeof(b), "%s
-%lu messages, %d devices, %d PGNs
-Engine tab: %s (instance %u)",
-           n2kBusOk() ? LV_SYMBOL_OK " Receiving" : LV_SYMBOL_WARNING " No NMEA 2000 data",
-           (unsigned long)n2kMsgCount(), devs, n2kSeenCount(), n2kSettings.engName, n2kSettings.engInstance);
+  char b[200];
+  snprintf(b, sizeof(b), TR("%s\n%lu messages, %d devices, %d PGNs\nEngine tab: %s (instance %u)"),
+           n2kBusOk() ? TR(LV_SYMBOL_OK " Receiving") : TR(LV_SYMBOL_WARNING " No NMEA 2000 data"),
+           (unsigned long)n2kMsgCount(), devs, n2kSeenCount(), tr(n2kSettings.engName), n2kSettings.engInstance);
   set_label(lbl_n2k, b);
+}
+
+/* ---------- starting screen ---------- */
+static lv_obj_t *ta_splash, *dd_splash_size, *sl_splash_r, *sl_splash_g, *sl_splash_b, *sl_splash_sec, *lbl_splash_prev;
+
+static void splash_preview() {
+  lv_obj_set_style_text_color(lbl_splash_prev, lv_color_make(splash_cfg.r, splash_cfg.g, splash_cfg.b), 0);
+  lv_obj_set_style_text_font(lbl_splash_prev, splash_font(splash_cfg.size), 0);
+  lv_label_set_text(lbl_splash_prev, splash_cfg.text[0] ? splash_cfg.text : "BOAT");
+}
+
+static void splash_save_now() {
+  LOCK();
+  strlcpy(splash_cfg.text, lv_textarea_get_text(ta_splash), sizeof(splash_cfg.text));
+  const uint8_t sizes[] = { 20, 28, 32, 48 };
+  splash_cfg.size = sizes[lv_dropdown_get_selected(dd_splash_size)];
+  splash_cfg.r = lv_slider_get_value(sl_splash_r);
+  splash_cfg.g = lv_slider_get_value(sl_splash_g);
+  splash_cfg.b = lv_slider_get_value(sl_splash_b);
+  splash_cfg.seconds = lv_slider_get_value(sl_splash_sec);
+  UNLOCK();
+  cmd_save_splash = true;
+  splash_preview();
+  kb_hide();
+}
+
+static void splash_cb(lv_event_t *e) {
+  splash_save_now();
+}
+
+/* ---------- power ---------- */
+/* Not called while the page is being built: reading the battery goes out over
+   I2C to the CH32 chip, and a fault there must not stop the UI coming up. */
+static void update_lipo_label(bool read_now = true) {
+  float v;
+  int pct;
+  bool chg;
+  if (!read_now) {
+    lv_label_set_text(lbl_lipo, "Onboard battery: tap Check battery");
+    return;
+  }
+  if (!board_battery(&v, &pct, &chg)) {
+    lv_label_set_text(lbl_lipo, "Onboard battery: none connected (running on external power)");
+    return;
+  }
+  lv_label_set_text_fmt(lbl_lipo, "Onboard battery: %d%%  (%d.%02d V)%s\n%s", pct, (int)v, (int)(v * 100) % 100,
+                        chg ? TR("  " LV_SYMBOL_CHARGE " charging") : "",
+                        sw6106_present() ? TR("SW6106 found: light-load shutdown disabled")
+                                         : TR("No SW6106 on this board"));
+}
+
+static void lipo_refresh_cb(lv_event_t *e) {
+  update_lipo_label();
+}
+
+static void powersave_cb(lv_event_t *e) {
+  feat_powersave = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+  cmd_save_feat = true;
+  if (!feat_powersave) power_set_saving(false);
+}
+
+static lv_obj_t *lbl_battmode, *sl_battpct;
+
+static void update_battmode_label() {
+  lv_label_set_text_fmt(lbl_battmode,
+                        feat_battmode
+                          ? "On battery: WiFi and Bluetooth off, screen at 10%%, last readings kept.\nShuts down at %d%%."
+                          : TR("Battery mode off: the board keeps running normally until the cell is flat."),
+                        batt_shutdown_pct);
+}
+
+static void battmode_cb(lv_event_t *e) {
+  feat_battmode = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+  cmd_save_feat = true;
+  update_battmode_label();
+}
+
+static void battpct_cb(lv_event_t *e) {
+  lv_event_code_t code = lv_event_get_code(e);
+  if (code == LV_EVENT_VALUE_CHANGED) {
+    batt_shutdown_pct = lv_slider_get_value(lv_event_get_target(e));
+    update_battmode_label();
+  } else if (code == LV_EVENT_RELEASED) {
+    cmd_save_feat = true;
+  }
+}
+
+static void perflog_cb(lv_event_t *e) {
+  feat_perflog = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+}
+
+/* ---------- debug ---------- */
+static void serial_cb(lv_event_t *e) {
+  feat_serial = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+  serial_apply();
+  log_fault("Serial monitor %s", feat_serial ? "on: everything is logged to USB serial" : "off: only faults");
+  cmd_save_feat = true;
+}
+
+/* ---------- alarms ---------- */
+static void update_alarm_label() {
+  char b[128];
+  snprintf(b, sizeof(b), TR("Battery: warning below %d%%, alarm below %d%%%s"),
+           alarm_cfg.soc_warn, alarm_cfg.soc_alarm, alarm_cfg.wind_warn ? "" : TR("\nWind warning off"));
+  if (alarm_cfg.wind_warn) {
+    char w[40];
+    snprintf(w, sizeof(w), TR("\nWind warning at %d m/s"), alarm_cfg.wind_warn);
+    strlcat(b, w, sizeof(b));
+  }
+  lv_label_set_text(lbl_alarm, b);
+}
+
+static void alarm_slider_cb(lv_event_t *e) {
+  lv_obj_t *sl = lv_event_get_target(e);
+  lv_event_code_t code = lv_event_get_code(e);
+  if (code == LV_EVENT_VALUE_CHANGED) {
+    int v = lv_slider_get_value(sl);
+    LOCK();
+    if (sl == sl_soc_warn) alarm_cfg.soc_warn = v;
+    else if (sl == sl_soc_alarm) alarm_cfg.soc_alarm = v;
+    else if (sl == sl_wind) alarm_cfg.wind_warn = v;
+    if (alarm_cfg.soc_alarm > alarm_cfg.soc_warn) alarm_cfg.soc_warn = alarm_cfg.soc_alarm;  // keep them in order
+    UNLOCK();
+    update_alarm_label();
+  } else if (code == LV_EVENT_RELEASED) {
+    cmd_save_alarm = true;
+  }
+}
+
+static void alarm_enable_cb(lv_event_t *e) {
+  alarm_cfg.enabled = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+  cmd_save_alarm = true;
+}
+
+static void alarm_sd_cb(lv_event_t *e) {
+  alarm_cfg.warn_sd = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+  cmd_save_alarm = true;
+}
+
+static void alarm_wake_cb(lv_event_t *e) {
+  alarm_cfg.wake_saver = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+  cmd_save_alarm = true;
+}
+
+/* ---------- confirmation dialog ---------- */
+static void (*confirm_action)() = nullptr;
+
+static void confirm_cb(lv_event_t *e) {
+  lv_obj_t *mb = lv_event_get_current_target(e);
+  uint16_t id = lv_msgbox_get_active_btn(mb);
+  lv_msgbox_close(mb);
+  if (id == 1 && confirm_action) confirm_action();  // 1 = "Yes"
+}
+
+static void confirm(const char *title, const char *text, void (*action)()) {
+  static const char *btns[] = { TR("Cancel"), TR("Yes"), "" };
+  confirm_action = action;
+  lv_obj_t *mb = lv_msgbox_create(NULL, TR(title), TR(text), btns, false);  // NULL = modal
+  lv_obj_add_event_cb(mb, confirm_cb, LV_EVENT_VALUE_CHANGED, NULL);
+  lv_obj_center(mb);
+}
+
+/* ---------- system ---------- */
+static void tidy_up() {
+  logf("System: closing the log and unmounting the card");
+  sd_log_unmount();
+  lv_refr_now(NULL);
+  delay(300);
+}
+
+static void do_reboot() {
+  tidy_up();
+  ESP.restart();
+}
+
+/* ---------- language ---------- */
+/* Saved by the network task (it does all flash writes), then the board restarts
+   so every screen is built again in the new language. */
+static lv_obj_t *dd_lang;
+#define MAX_LANGS 8
+static char lang_codes[MAX_LANGS][LANG_CODE_LEN];
+char lang_pending[LANG_CODE_LEN] = "en";
+
+static void lang_restart_timer(lv_timer_t *t) {
+  static uint8_t waited = 0;
+  if (cmd_save_lang && ++waited < 30) return;  // up to 3 s for the write
+  logf("Language changed to %s - restarting", lang_pending);
+  do_reboot();
+}
+
+static void lang_cb(lv_event_t *e) {
+  const char *code = lang_codes[lv_dropdown_get_selected(dd_lang)];
+  if (!strcmp(code, ui_lang)) return;
+  strlcpy(lang_pending, code, sizeof(lang_pending));
+  cmd_save_lang = true;
+  /* shown as the language's own name: its translation only arrives with the restart */
+  static char msg[48];
+  char name[32];
+  lv_dropdown_get_selected_str(dd_lang, name, sizeof(name));
+  snprintf(msg, sizeof(msg), LV_SYMBOL_REFRESH "  %s ...", name);
+  lv_obj_t *mb = lv_msgbox_create(NULL, NULL, msg, NULL, false);
+  lv_obj_center(mb);
+  lv_timer_create(lang_restart_timer, 100, NULL);
+}
+
+static void do_shutdown() {
+  tidy_up();
+  set_backlight(0);
+  delay(200);
+  esp_deep_sleep_start();  // press the reset button to start again
+}
+
+static void do_factory_reset() {
+  logf("System: erasing all settings");
+  prefs.clear();  // everything in the "wx" namespace
+  for (const char *ns : { "n2k", "n2klim" }) {  // NMEA 2000 settings and limits
+    Preferences p;
+    if (p.begin(ns, false)) {
+      p.clear();
+      p.end();
+    }
+  }
+  tidy_up();
+  ESP.restart();
+}
+
+static void reboot_cb(lv_event_t *e) {
+  confirm("Restart", "Restart the board now?", do_reboot);
+}
+
+static void shutdown_cb(lv_event_t *e) {
+  confirm("Shut down", "Switch the display off?\n\nThe board goes to sleep and only the reset button (or cutting the power) starts it again.", do_shutdown);
+}
+
+static void factory_cb(lv_event_t *e) {
+  confirm("Full reset",
+          "Erase every setting?\n\nWiFi, weather location, RuuviTags, Victron devices and keys, NMEA 2000 settings and limits and the web password are all lost. The board restarts afterwards.",
+          do_factory_reset);
 }
 
 /* ---------- SD card and logging ---------- */
@@ -328,8 +580,8 @@ static void update_sdlog_label() {
   if (sd_log_ok())
     lv_label_set_text_fmt(lbl_sdlog, "%s\n%s, %u kB", info, sd_log_name(), (unsigned)(sd_log_size() / 1024));
   else
-    lv_label_set_text_fmt(lbl_sdlog, "%s\n%s", sd_log_status(),
-                          feat_sdlog ? "Insert a card and tap Mount." : "The log is kept in memory and readable at /log.");
+    lv_label_set_text_fmt(lbl_sdlog, "%s\n%s", TR(sd_log_status()),
+                          feat_sdlog ? TR("Insert a card and tap Mount.") : TR("The log is kept in memory and readable at /log."));
 }
 
 static void sd_mount_cb(lv_event_t *e) {
@@ -362,8 +614,8 @@ static void sdlog_cb(lv_event_t *e) {
   if (feat_sdlog) {
     sd_log_mount();
     logf("Logging to the TF card switched on");
-  } else if (!feat_csv) {
-    sd_log_unmount();  // keep the card mounted while the CSV log still uses it
+  } else {
+    sd_log_unmount();
   }
   update_sdlog_label();
 }
@@ -373,7 +625,7 @@ static void sd_refresh_cb(lv_event_t *e) {
 }
 
 static void update_csv_label() {
-  lv_label_set_text_fmt(lbl_csv, "%s", feat_csv ? csv_status() : "Measurements are not being logged.");
+  lv_label_set_text_fmt(lbl_csv, "%s", feat_csv ? TR(csv_status()) : TR("Measurements are not being logged."));
 }
 
 static void csv_cb(lv_event_t *e) {
@@ -414,72 +666,33 @@ static void feat_ruuvi_cb(lv_event_t *e) {
 }
 
 /* ---------- build ---------- */
-/* ---------- confirmation dialog ---------- */
-static void (*confirm_action)() = nullptr;
-
-static void confirm_cb(lv_event_t *e) {
-  lv_obj_t *mb = lv_event_get_current_target(e);
-  uint16_t id = lv_msgbox_get_active_btn(mb);
-  lv_msgbox_close(mb);
-  if (id == 1 && confirm_action) confirm_action();  // 1 = "Yes"
-}
-
-static void confirm(const char *title, const char *text, void (*action)()) {
-  static const char *btns[] = { "Cancel", "Yes", "" };
-  confirm_action = action;
-  lv_obj_t *mb = lv_msgbox_create(NULL, title, text, btns, false);  // NULL = modal
-  lv_obj_add_event_cb(mb, confirm_cb, LV_EVENT_VALUE_CHANGED, NULL);
-  lv_obj_center(mb);
-}
-
-/* ---------- system ---------- */
-static void tidy_up() {
-  logf("System: closing the log and unmounting the card");
-  sd_log_unmount();
-  lv_refr_now(NULL);
-  delay(300);
-}
-
-static void do_reboot() {
-  tidy_up();
-  ESP.restart();
-}
-
-static void do_shutdown() {
-  tidy_up();
-  set_backlight(0);
-  delay(200);
-  esp_deep_sleep_start();  // press the reset button to start again
-}
-
-static void do_factory_reset() {
-  logf("System: erasing all settings");
-  prefs.clear();
-  tidy_up();
-  ESP.restart();
-}
-
-static void reboot_cb(lv_event_t *e) {
-  confirm("Restart", "Restart the board now?", do_reboot);
-}
-
-static void shutdown_cb(lv_event_t *e) {
-  confirm("Shut down", "Switch the display off?\n\nThe board goes to sleep and only the reset button (or cutting the power) starts it again.", do_shutdown);
-}
-
-static void factory_cb(lv_event_t *e) {
-  confirm("Full reset",
-          "Erase every setting?\n\nWiFi, weather location, RuuviTags, Victron devices and keys, NMEA 2000 settings and the web password are all lost. The board restarts afterwards.",
-          do_factory_reset);
+/* Prepares one of the sub-pages: a scrolling column of section cards */
+static lv_obj_t *settings_page(lv_obj_t *tv, const char *name) {
+  lv_obj_t *p = lv_tabview_add_tab(tv, name);
+  lv_obj_set_flex_flow(p, LV_FLEX_FLOW_COLUMN);
+  lv_obj_set_style_pad_row(p, 16, 0);
+  lv_obj_set_style_pad_bottom(p, 16, 0);
+  return p;
 }
 
 void build_settings_tab() {
-  lv_obj_set_flex_flow(tab_settings, LV_FLEX_FLOW_COLUMN);
-  lv_obj_set_style_pad_row(tab_settings, 16, 0);  // space between the section cards
-  lv_obj_set_style_pad_bottom(tab_settings, 16, 0);
+  lv_obj_set_style_pad_all(tab_settings, 0, 0);
+
+  /* a second row of tabs, so no page is longer than a couple of screens */
+  lv_obj_t *tv = lv_tabview_create(tab_settings, LV_DIR_TOP, 42);
+  lv_obj_set_size(tv, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_style_bg_opa(tv, LV_OPA_TRANSP, 0);
+  lv_obj_t *btns = lv_tabview_get_tab_btns(tv);
+  lv_obj_set_style_text_font(btns, FONT_UI, 0);
+  lv_obj_set_style_bg_color(btns, lv_color_hex(0x1B1F24), 0);
+
+  lv_obj_t *p_conn = settings_page(tv, "Connect");
+  lv_obj_t *p_sens = settings_page(tv, "Sensors");
+  lv_obj_t *p_n2k = settings_page(tv, "NMEA 2000");
+  lv_obj_t *p_sys = settings_page(tv, "Device");
 
   /* ---- WiFi ---- */
-  lv_obj_t *sec = make_section(tab_settings, LV_SYMBOL_WIFI "  WiFi");
+  lv_obj_t *sec = make_section(p_conn, LV_SYMBOL_WIFI "  WiFi");
 
   lv_obj_t *row = make_row(sec, LV_FLEX_ALIGN_START);
   dd_ssid = lv_dropdown_create(row);
@@ -500,7 +713,7 @@ void build_settings_tab() {
   lv_label_set_text(lbl_wifi_status, "");
 
   /* ---- Web page ---- */
-  sec = make_section(tab_settings, LV_SYMBOL_EYE_OPEN "  Web page");
+  sec = make_section(p_conn, LV_SYMBOL_EYE_OPEN "  Web page");
   lbl_web = lv_label_create(sec);
   lv_obj_set_width(lbl_web, LV_PCT(100));
   lv_label_set_long_mode(lbl_web, LV_LABEL_LONG_WRAP);
@@ -510,6 +723,8 @@ void build_settings_tab() {
   lv_textarea_set_max_length(ta_webname, 23);
   lv_obj_set_flex_grow(ta_webname, 1);
   lv_textarea_set_text(ta_webname, g.web_name);
+
+  make_switch_row(sec, "Run the web server", feat_web, web_enable_cb);
 
   row = make_row(sec, LV_FLEX_ALIGN_START);
   ta_webpass = make_ta(row, "Password (empty = no login)", webpass_save_now);
@@ -521,7 +736,7 @@ void build_settings_tab() {
   update_web_label();
 
   /* ---- Weather ---- */
-  sec = make_section(tab_settings, LV_SYMBOL_GPS "  Weather location");
+  sec = make_section(p_conn, LV_SYMBOL_GPS "  Weather location");
   row = make_row(sec, LV_FLEX_ALIGN_START);
   ta_city = make_ta(row, "City (or City, Country)", locate_now);
   lv_obj_set_flex_grow(ta_city, 1);
@@ -533,7 +748,7 @@ void build_settings_tab() {
   lv_label_set_text(lbl_loc, "");
 
   /* ---- Temperature: RuuviTags ---- */
-  sec = make_section(tab_settings, LV_SYMBOL_BLUETOOTH "  Temperature (RuuviTags)");
+  sec = make_section(p_sens, LV_SYMBOL_BLUETOOTH "  Temperature (RuuviTags)");
   make_switch_row(sec, "Read RuuviTags", feat_ruuvi, feat_ruuvi_cb);
 
   row = make_row(sec, LV_FLEX_ALIGN_START);
@@ -572,25 +787,45 @@ void build_settings_tab() {
   lv_label_set_text(lbl_ruuvi_msg, "");
   ruuvi_rebuild_list();
 
+  settings_victron(p_sens);
+
   /* ---- NMEA 2000 ---- */
-  sec = make_section(tab_settings, LV_SYMBOL_SHUFFLE "  NMEA 2000");
+  sec = make_section(p_n2k, LV_SYMBOL_SHUFFLE "  NMEA 2000");
   lbl_n2k = lv_label_create(sec);
   lv_obj_set_width(lbl_n2k, LV_PCT(100));
   lv_label_set_long_mode(lbl_n2k, LV_LABEL_LONG_WRAP);
   lv_label_set_text(lbl_n2k, "");
-  make_switch_row(sec, "Twin engines: start page shows port and starboard RPM", n2kSettings.twin, twin_cb);
   make_btn(sec, LV_SYMBOL_LIST " Devices, gauge ranges and limits", n2k_open_cb);
   lv_obj_t *n2k_hint = make_grey_label(sec);
   lv_obj_set_width(n2k_hint, LV_PCT(100));
   lv_label_set_long_mode(n2k_hint, LV_LABEL_LONG_WRAP);
-  lv_label_set_text(n2k_hint, "Every device on the bus, grouped by PGN. Tap a value to set its gauge range and warning/alarm limits. The engine is chosen on the Engine tab.");
+  lv_label_set_text(n2k_hint, "Every device on the bus, grouped by PGN. Tap a value to set its gauge range and warning/alarm limits.");
+
+  sec = make_section(p_n2k, LV_SYMBOL_SETTINGS "  Engines");
+  make_switch_row(sec, "Twin engines: start page shows port and starboard RPM", n2kSettings.twin, twin_cb);
+  lv_obj_t *eng_hint = make_grey_label(sec);
+  lv_obj_set_width(eng_hint, LV_PCT(100));
+  lv_label_set_long_mode(eng_hint, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(eng_hint, "The engine shown on the Engine tab is chosen on that tab. Engine and tank names can be changed from the web page (/api/n2k/set).");
   lv_timer_create(n2k_timer_cb, 1000, NULL);
 
-  /* ---- Victron (own file) ---- */
-  settings_victron(tab_settings);
+  /* ---- Language ---- */
+  sec = make_section(p_sys, LV_SYMBOL_LIST "  Language");
+  row = make_row(sec, LV_FLEX_ALIGN_SPACE_BETWEEN);
+  lv_obj_t *lang_lbl = lv_label_create(row);
+  lv_obj_set_flex_grow(lang_lbl, 1);
+  lv_label_set_long_mode(lang_lbl, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(lang_lbl, "Language on the display. The board restarts to change it.");
+  dd_lang = lv_dropdown_create(row);
+  static char lang_names[MAX_LANGS * 24];  // each name in its own language
+  int nl = lang_list(&lang_codes[0][0], MAX_LANGS, lang_names, sizeof(lang_names));
+  (lv_dropdown_set_options)(dd_lang, lang_names);  // not translated
+  for (int i = 0; i < nl; i++)
+    if (!strcmp(lang_codes[i], ui_lang)) lv_dropdown_set_selected(dd_lang, i);
+  lv_obj_add_event_cb(dd_lang, lang_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
   /* ---- Display ---- */
-  sec = make_section(tab_settings, LV_SYMBOL_IMAGE "  Display");
+  sec = make_section(p_sys, LV_SYMBOL_IMAGE "  Display");
   lbl_bl = lv_label_create(sec);
   sl_bl = make_slider(sec, 5, 100, bl_normal, bl_slider_cb);  // min 5% so the screen never goes black
   lbl_bl_saver = lv_label_create(sec);
@@ -598,13 +833,14 @@ void build_settings_tab() {
   update_bl_labels();
 
   /* ---- Sensor scan interval ---- */
-  sec = make_section(tab_settings, LV_SYMBOL_REFRESH "  Sensor scan interval");
+  sec = make_section(p_sens, LV_SYMBOL_REFRESH "  Sensor scan interval");
   lbl_scan = lv_label_create(sec);
   make_slider(sec, 1, 10, scan_interval_s, scan_slider_cb);
   update_scan_label();
 
+
   /* ---- SD card ---- */
-  sec = make_section(tab_settings, LV_SYMBOL_SD_CARD "  SD card");
+  sec = make_section(p_sys, LV_SYMBOL_SD_CARD "  SD card");
   make_switch_row(sec, "Write the log to the card", feat_sdlog, sdlog_cb);
 
   lbl_sdlog = lv_label_create(sec);
@@ -652,19 +888,107 @@ void build_settings_tab() {
   lv_label_set_text(sd_hint, "Eject before pulling the card out. Files can be downloaded from the web page under /files. The backup contains WiFi and Victron keys, so keep the card safe. Restoring restarts the board.");
   update_sdlog_label();
 
+  /* ---- Power ---- */
+  sec = make_section(p_sys, LV_SYMBOL_BATTERY_2 "  Power");
+  make_switch_row(sec, "Slow the CPU while the screen sleeps", feat_powersave, powersave_cb);
+
+  lbl_lipo = lv_label_create(sec);
+  lv_obj_set_width(lbl_lipo, LV_PCT(100));
+  lv_label_set_long_mode(lbl_lipo, LV_LABEL_LONG_WRAP);
+  update_lipo_label(false);  // ask the chip only when the button is tapped
+  make_btn(sec, LV_SYMBOL_REFRESH " Check battery", lipo_refresh_cb);
+
+  make_switch_row(sec, "Keep running on the battery when power is lost", feat_battmode, battmode_cb);
+  lbl_battmode = lv_label_create(sec);
+  lv_obj_set_width(lbl_battmode, LV_PCT(100));
+  lv_label_set_long_mode(lbl_battmode, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(lv_label_create(sec), "Shut down at");
+  sl_battpct = make_slider(sec, 5, 60, batt_shutdown_pct, battpct_cb);
+  update_battmode_label();
+  lv_obj_t *pwr_hint = make_grey_label(sec);
+  lv_obj_set_width(pwr_hint, LV_PCT(100));
+  lv_label_set_long_mode(pwr_hint, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(pwr_hint, "WiFi modem sleep is always on. Tabs that are not on screen are not redrawn, which is where most of the CPU time went.");
+
+  /* ---- Starting screen ---- */
+  sec = make_section(p_sys, LV_SYMBOL_EYE_OPEN "  Starting screen");
+  lv_obj_t *splash_hint = make_grey_label(sec);
+  lv_obj_set_width(splash_hint, LV_PCT(100));
+  lv_label_set_long_mode(splash_hint, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(splash_hint, "Shown while the board starts. Set the time to 0 to skip it.");
+
+  row = make_row(sec, LV_FLEX_ALIGN_START);
+  ta_splash = make_ta(row, "Text", splash_save_now);
+  lv_obj_set_flex_grow(ta_splash, 1);
+  lv_textarea_set_max_length(ta_splash, 19);
+  lv_textarea_set_text(ta_splash, splash_cfg.text);
+  dd_splash_size = lv_dropdown_create(row);
+  lv_dropdown_set_options_static(dd_splash_size, "20\n28\n32\n48");
+  lv_dropdown_set_selected(dd_splash_size, splash_cfg.size == 20 ? 0 : splash_cfg.size == 28 ? 1
+                                                                  : splash_cfg.size == 32   ? 2
+                                                                                            : 3);
+  lv_obj_add_event_cb(dd_splash_size, splash_cb, LV_EVENT_VALUE_CHANGED, NULL);
+  make_btn(row, LV_SYMBOL_SAVE, splash_cb);
+
+  lbl_splash_prev = lv_label_create(sec);
+  splash_preview();
+
+  lv_label_set_text(lv_label_create(sec), "Red");
+  sl_splash_r = make_slider(sec, 0, 255, splash_cfg.r, splash_cb);
+  lv_label_set_text(lv_label_create(sec), "Green");
+  sl_splash_g = make_slider(sec, 0, 255, splash_cfg.g, splash_cb);
+  lv_label_set_text(lv_label_create(sec), "Blue");
+  sl_splash_b = make_slider(sec, 0, 255, splash_cfg.b, splash_cb);
+  lv_label_set_text(lv_label_create(sec), "Seconds shown");
+  sl_splash_sec = make_slider(sec, 0, 15, splash_cfg.seconds, splash_cb);
+
+  /* ---- Alarms ---- */
+  sec = make_section(p_sys, LV_SYMBOL_WARNING "  Alarms");
+  make_switch_row(sec, "Battery, wind and system warnings", alarm_cfg.enabled, alarm_enable_cb);
+  make_switch_row(sec, "A new alarm wakes the screen", alarm_cfg.wake_saver, alarm_wake_cb);
+  make_switch_row(sec, "Warn when the SD card is missing", alarm_cfg.warn_sd, alarm_sd_cb);
+  lv_obj_t *alarm_hint = make_grey_label(sec);
+  lv_obj_set_width(alarm_hint, LV_PCT(100));
+  lv_label_set_long_mode(alarm_hint, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(alarm_hint, "Engine, depth, tank and voltage limits are set per value under NMEA 2000. Temperatures are never alarmed on: the boat may be left unheated and a tag can sit outside or in a fridge.");
+
+  lbl_alarm = lv_label_create(sec);
+  lv_obj_set_width(lbl_alarm, LV_PCT(100));
+  lv_label_set_long_mode(lbl_alarm, LV_LABEL_LONG_WRAP);
+
+  lv_label_set_text(lv_label_create(sec), "Battery warning %");
+  sl_soc_warn = make_slider(sec, 10, 90, alarm_cfg.soc_warn, alarm_slider_cb);
+  lv_label_set_text(lv_label_create(sec), "Battery alarm %");
+  sl_soc_alarm = make_slider(sec, 5, 50, alarm_cfg.soc_alarm, alarm_slider_cb);
+  lv_label_set_text(lv_label_create(sec), "Wind warning m/s (0 = off)");
+  sl_wind = make_slider(sec, 0, 25, alarm_cfg.wind_warn, alarm_slider_cb);
+  update_alarm_label();
+
+  /* ---- Debug ---- */
+  sec = make_section(p_sys, LV_SYMBOL_SETTINGS "  Debug");
+  make_switch_row(sec, "Serial monitor: log everything to USB serial", feat_serial, serial_cb);
+  make_switch_row(sec, "Log memory, CPU and battery", feat_perflog, perflog_cb);
+  lv_obj_t *dbg_hint = make_grey_label(sec);
+  lv_obj_set_width(dbg_hint, LV_PCT(100));
+  lv_label_set_long_mode(dbg_hint, LV_LABEL_LONG_WRAP);
+  lv_label_set_text(dbg_hint, "Off: only faults (errors and warnings) are written to USB serial. "
+                              "The log on the web page (/log) and on the SD card always gets everything.");
+
   /* ---- About ---- */
-  sec = make_section(tab_settings, LV_SYMBOL_HOME "  About");
+  sec = make_section(p_sys, LV_SYMBOL_HOME "  About");
   lv_obj_t *about = make_grey_label(sec);
   lv_obj_set_width(about, LV_PCT(100));
   lv_label_set_long_mode(about, LV_LABEL_LONG_WRAP);
   /* LVGL's built-in fonts have no (c) sign and no a-umlaut, so plain ASCII here */
   lv_label_set_text(about,
-                    "(c) " __DATE__ " " __TIME__ " Fredrik Rudin\n"
+                    "Version " FW_VERSION "  -  built " __DATE__ " " __TIME__ "\n"
+                    "(c) Fredrik Rudin\n"
                     "github.com/fredrikrudin/esp32-S3-ws4-boat\n"
-                    "med hjalp av claude.ai Opus 5");
+                    "Written with the help of Claude (Anthropic AI)\n"
+                    "License: CC BY-NC 4.0 - non-commercial use only");
 
   /* ---- System ---- */
-  sec = make_section(tab_settings, LV_SYMBOL_POWER "  System");
+  sec = make_section(p_sys, LV_SYMBOL_POWER "  System");
   row = make_row(sec, LV_FLEX_ALIGN_START);
   make_btn(row, LV_SYMBOL_REFRESH " Restart", reboot_cb);
   make_btn(row, LV_SYMBOL_POWER " Shut down", shutdown_cb);

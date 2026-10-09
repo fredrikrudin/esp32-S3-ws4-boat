@@ -1,38 +1,40 @@
+// esp32-S3-ws4-boat v1.0
 // ui_n2k_common.cpp
 #include <string.h>
 #include "ui_n2k_common.h"
+#include "n2k_data.h"
 
 // Pick the largest fonts enabled in lv_conf.h (LV_FONT_MONTSERRAT_xx 1)
 #if LV_FONT_MONTSERRAT_48
-const lv_font_t *UI_FONT_XL = &lv_font_montserrat_48;
+const lv_font_t *ui_font_xl_builtin = &lv_font_montserrat_48;
 #elif LV_FONT_MONTSERRAT_40
-const lv_font_t *UI_FONT_XL = &lv_font_montserrat_40;
+const lv_font_t *ui_font_xl_builtin = &lv_font_montserrat_40;
 #elif LV_FONT_MONTSERRAT_32
-const lv_font_t *UI_FONT_XL = &lv_font_montserrat_32;
+const lv_font_t *ui_font_xl_builtin = &lv_font_montserrat_32;
 #else
-const lv_font_t *UI_FONT_XL = LV_FONT_DEFAULT;
+const lv_font_t *ui_font_xl_builtin = LV_FONT_DEFAULT;
 #endif
 
 #if LV_FONT_MONTSERRAT_28
-const lv_font_t *UI_FONT_L = &lv_font_montserrat_28;
+const lv_font_t *ui_font_l_builtin = &lv_font_montserrat_28;
 #elif LV_FONT_MONTSERRAT_24
-const lv_font_t *UI_FONT_L = &lv_font_montserrat_24;
+const lv_font_t *ui_font_l_builtin = &lv_font_montserrat_24;
 #else
-const lv_font_t *UI_FONT_L = LV_FONT_DEFAULT;
+const lv_font_t *ui_font_l_builtin = LV_FONT_DEFAULT;
 #endif
 
 #if LV_FONT_MONTSERRAT_20
-const lv_font_t *UI_FONT_M = &lv_font_montserrat_20;
+const lv_font_t *ui_font_m_builtin = &lv_font_montserrat_20;
 #elif LV_FONT_MONTSERRAT_18
-const lv_font_t *UI_FONT_M = &lv_font_montserrat_18;
+const lv_font_t *ui_font_m_builtin = &lv_font_montserrat_18;
 #else
-const lv_font_t *UI_FONT_M = LV_FONT_DEFAULT;
+const lv_font_t *ui_font_m_builtin = LV_FONT_DEFAULT;
 #endif
 
 #if LV_FONT_MONTSERRAT_14
-const lv_font_t *UI_FONT_S = &lv_font_montserrat_14;
+const lv_font_t *ui_font_s_builtin = &lv_font_montserrat_14;
 #else
-const lv_font_t *UI_FONT_S = LV_FONT_DEFAULT;
+const lv_font_t *ui_font_s_builtin = LV_FONT_DEFAULT;
 #endif
 
 static const uint32_t COL_BG    = 0x0B1622;
@@ -90,7 +92,34 @@ UiTile uiTile(lv_obj_t *parent, const char *title, const char *unit,
 }
 
 void uiLabelSetIfChanged(lv_obj_t *lbl, const char *text) {
-  if (strcmp(lv_label_get_text(lbl), text) != 0) lv_label_set_text(lbl, text);
+  set_label(lbl, text);  // translates, then redraws only when the text changed
+}
+
+/* the start page's short names for the default tanks, translated */
+static const char *const FLUID_SHORT[] __attribute__((unused)) = {
+  N_("Fuel"), N_("Fresh"), N_("Grey"), N_("Live"), N_("Oil"), N_("Black"), N_("Gasoline"), N_("Tank")
+};
+
+void uiTankName(const N2kTank *t, char *buf, size_t n, bool short_name) {
+  if (!t) {
+    if (n) buf[0] = 0;
+    return;
+  }
+  const char *fluid = n2kFluidName(t->fluidType);
+  char auto_name[32];
+  snprintf(auto_name, sizeof(auto_name), "%s %u", fluid, t->instance + 1);
+  bool is_default = !strcmp(t->name, fluid) || !strcmp(t->name, auto_name);
+  if (!short_name) {
+    if (!strcmp(t->name, auto_name)) snprintf(buf, n, "%s %u", tr(fluid), t->instance + 1);  // "Fresh water 2"
+    else strlcpy(buf, tr(t->name), n);
+    return;
+  }
+  /* first word: "Fresh water" -> "Fresh", translated as a word of its own */
+  char word[24];
+  strlcpy(word, t->name, sizeof(word));
+  char *sp = strchr(word, ' ');
+  if (sp) *sp = 0;
+  strlcpy(buf, is_default ? tr(word) : word, n);
 }
 
 void uiTileSet(UiTile &t, const char *text, UiLevel level) {

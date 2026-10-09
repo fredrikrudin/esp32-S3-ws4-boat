@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // ui_engine.h - Engine tab (one engine per display; choose instance in the header dropdown)
 #pragma once
 #include <lvgl.h>

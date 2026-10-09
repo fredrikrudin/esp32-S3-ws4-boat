@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 /* BLE scanning (NimBLE-Arduino 2.x). Every advertisement is offered to the
    RuuviTag and Victron decoders (which ignore data that isn't theirs). */
 #include "app.h"
@@ -5,8 +6,8 @@
 
 class SensorScanCB : public NimBLEScanCallbacks {
   void onResult(const NimBLEAdvertisedDevice *dev) override {
-    if (!dev->haveManufacturerData()) return;
     std::string addr = dev->getAddress().toString();
+    if (!dev->haveManufacturerData()) return;
     std::string md = dev->getManufacturerData();
     ruuvi_parse(md, addr.c_str(), dev->getRSSI());
     vic_handle(md, addr.c_str(), dev->getRSSI());

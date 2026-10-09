@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // n2k_settings.cpp
 #include <Preferences.h>
 #include "n2k_settings.h"

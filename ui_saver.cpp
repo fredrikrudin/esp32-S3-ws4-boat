@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 /* Screen saver: dim clock + battery state of charge, lower backlight,
    after SAVER_TIMEOUT_MS without touch.
    It is a separate LVGL screen, so the main UI isn't redrawn while it shows. */
@@ -45,12 +46,13 @@ static void saver_update_soc() {
 }
 
 static void saver_wake_cb(lv_event_t *e) {
-  USBSerial.println("Screen saver off");
+  power_set_saving(false);
   set_backlight(bl_normal);
   lv_scr_load(main_scr);
   lv_disp_trig_activity(NULL);
 }
 
+/* A new alarm on the start page brings the display back */
 void saver_wake() {
   if (saver_scr && lv_scr_act() == saver_scr) saver_wake_cb(NULL);
 }
@@ -59,6 +61,7 @@ void build_saver() {
   main_scr = lv_scr_act();
 
   saver_scr = lv_obj_create(NULL);
+  ui_font_apply(saver_scr);
   lv_obj_set_style_bg_color(saver_scr, lv_color_black(), 0);
   lv_obj_set_style_bg_opa(saver_scr, LV_OPA_COVER, 0);
   lv_obj_clear_flag(saver_scr, LV_OBJ_FLAG_SCROLLABLE);
@@ -106,6 +109,9 @@ void build_saver() {
 
 void saver_timer_cb(lv_timer_t *t) {
   bool active = (lv_scr_act() == saver_scr);
+
+  /* a new alarm wakes the screen: the start page does that (saver_wake()), as it
+     sees the NMEA 2000 limits as well as the alarms from alarms.cpp */
   if (!active) {
     if (lv_disp_get_inactive_time(NULL) < SAVER_TIMEOUT_MS) return;
     kb_hide();
@@ -113,7 +119,8 @@ void saver_timer_cb(lv_timer_t *t) {
     saver_update_soc();  // fill it in before the screen shows
     lv_scr_load(saver_scr);
     set_backlight(bl_saver);
-    USBSerial.printf("Screen saver on (backlight %u%%)\n", bl_saver);
+    power_set_saving(true);
+    dlogf("Screen saver on (backlight %u%%)", bl_saver);
   }
 
   saver_update_soc();

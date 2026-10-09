@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // n2k_web.cpp - JSON status, settings API and CSV logging helpers.
 // Server-agnostic: works with WebServer, AsyncWebServer or anything that can send a String.
 #include "n2k_bus.h"

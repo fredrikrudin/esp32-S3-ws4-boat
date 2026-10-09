@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // ui_nav.h - Navigation tab: depth, speed, sea temperature, volts, position
 #pragma once
 #include <lvgl.h>

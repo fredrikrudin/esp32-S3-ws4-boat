@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // ui_tanks.cpp - Tanks tab, vertical "card" gauges
 //
 //   +-----------+   Coloured frame per fluid type (red on alarm)
@@ -16,6 +17,7 @@
 // from 5 tanks on the row scrolls sideways.
 // Cards are rebuilt automatically when a tank appears on the bus or is renamed.
 #include <stdio.h>
+#include <string.h>
 #include "ui_tanks.h"
 #include "ui_n2k_common.h"
 #include "n2k_config.h"
@@ -87,17 +89,26 @@ static void makeCard(TankCard &c, const N2kTank *t, lv_coord_t w) {
   lv_obj_set_style_border_color(c.card, frameColor(c.ft), 0);
   lv_obj_set_style_radius(c.card, 14, 0);
   lv_obj_set_style_pad_all(c.card, 10, 0);
+  lv_obj_set_style_pad_hor(c.card, 6, 0);  // room for "Svartvatten" in a narrow card
   lv_obj_set_style_pad_row(c.card, 6, 0);
   lv_obj_set_flex_flow(c.card, LV_FLEX_FLOW_COLUMN);
   lv_obj_set_flex_align(c.card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
   // Name
   c.name = lv_label_create(c.card);
-  lv_label_set_text(c.name, t->name);
+  char nm[32];
+  uiTankName(t, nm, sizeof(nm));
+  lv_label_set_text(c.name, nm);
   lv_label_set_long_mode(c.name, LV_LABEL_LONG_DOT);
   lv_obj_set_width(c.name, lv_pct(100));
   lv_obj_set_style_text_align(c.name, LV_TEXT_ALIGN_CENTER, 0);
-  lv_obj_set_style_text_font(c.name, UI_FONT_M, 0);
+  /* a long single word ("Svartvatten") would be split over two lines: smaller font then */
+  const lv_font_t *nf = UI_FONT_M;
+  const char *sp = strchr(nm, ' ');
+  char first[32];
+  strlcpy(first, nm, sp ? (size_t)(sp - nm + 1) : sizeof(first));
+  if (lv_txt_get_width(first, strlen(first), nf, 0, LV_TEXT_FLAG_NONE) > w - 18) nf = UI_FONT_S;  // inside the border and padding
+  lv_obj_set_style_text_font(c.name, nf, 0);
   lv_obj_set_style_text_color(c.name, lv_color_white(), 0);
 
   // Bar "well" - takes all remaining height
@@ -171,7 +182,8 @@ static void build() {
   }
 }
 
-static void tick(lv_timer_t *) {
+static void tick(lv_timer_t *t) {
+  if (t && !tab_visible(tab_tanks)) return;  // nothing to redraw while another tab is shown
   if (s_builtVer != n2kTankListVersion()) build();
   char buf[32];
 

@@ -1,6 +1,8 @@
+// esp32-S3-ws4-boat v1.0
 // n2k_limits.cpp
 #include <Preferences.h>
 #include "n2k_limits.h"
+#define N_(s) s  // marks text for translation (tools/i18n.py); translated where it is shown
 #include "n2k_config.h"
 
 struct LimRec { uint8_t q, inst, sub, used; N2kLimits l; };
@@ -135,17 +137,17 @@ N2kLevel n2kLimitsEval(const N2kLimits &l, double v, bool checkLow) {
 bool n2kLimitsValid(const N2kLimits &l, const char **err) {
   const char *e = nullptr;
   float seq[4] = { l.alarmLo, l.warnLo, l.warnHi, l.alarmHi };
-  if (isnan(l.gMin) || isnan(l.gMax))      e = "Gauge min and max are required";
-  else if (l.gMin >= l.gMax)               e = "Gauge min must be below max";
+  if (isnan(l.gMin) || isnan(l.gMax))      e = N_("Gauge min and max are required");
+  else if (l.gMin >= l.gMax)               e = N_("Gauge min must be below max");
   else {
     float prev = NAN;
     for (int i = 0; i < 4 && !e; i++) {
       if (isnan(seq[i])) continue;
-      if (!isnan(prev) && seq[i] < prev)   e = "Order: alarm low <= warn low < warn high <= alarm high";
+      if (!isnan(prev) && seq[i] < prev)   e = N_("Order: alarm low <= warn low < warn high <= alarm high");
       prev = seq[i];
     }
     if (!e && !isnan(l.warnLo) && !isnan(l.warnHi) && l.warnLo >= l.warnHi)
-      e = "Warn low must be below warn high";
+      e = N_("Warn low must be below warn high");
   }
   if (err) *err = e;
   return e == nullptr;

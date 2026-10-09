@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // ui_n2k_settings.h - NMEA 2000 settings tab
 //
 // Lists every device (source address) seen on the bus, grouped by the PGNs it

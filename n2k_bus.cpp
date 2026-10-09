@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // n2k_bus.cpp - receives NMEA 2000 PGNs and stores them in the generic data store
 //
 // Libraries (Arduino IDE):
@@ -16,9 +17,9 @@
 #include "n2k_data.h"
 #include "n2k_settings.h"
 #include "n2k_limits.h"
-#include "HWCDC.h"
-extern HWCDC USBSerial;                        // board.cpp
-void logf(const char *fmt, ...);               // sdlog.cpp: Serial + /log + TF card
+void logf(const char *fmt, ...);       // sdlog.cpp: the log (/log, SD card, and USB serial with the serial monitor on)
+void log_fault(const char *fmt, ...);  // sdlog.cpp: an error, always on USB serial too
+void serf(const char *fmt, ...);       // sdlog.cpp: USB serial only, with the serial monitor on
 
 static NMEA2000_esp32_twai *s_n2k = nullptr;
 static tN2kDeviceList *s_devList = nullptr;   // names from address claim / product info
@@ -65,7 +66,7 @@ static void onMsg(const tN2kMsg &m) {
   n2kNoteSeen(m.PGN, m.Source);
   n2kSetPgnContext(m.PGN);
 #if N2K_DEBUG_SERIAL >= 2
-  USBSerial.printf("[N2K] PGN %lu src %u len %u\n", (unsigned long)m.PGN, m.Source, m.DataLen);
+  serf("[N2K] PGN %lu src %u len %u\n", (unsigned long)m.PGN, m.Source, m.DataLen);
 #endif
   const uint8_t src = m.Source;
 
@@ -212,7 +213,7 @@ void n2kStart() {
   s_n2k->SetN2kCANReceiveFrameBufSize(150);
 
   uint32_t unique = (uint32_t)(ESP.getEfuseMac() & 0x1FFFFF);   // 21 bits, differs per board
-  s_n2k->SetProductInformation("WS4BOAT", 100, "ESP32-S3 WS4 Boat Display", "1.0.0", "1.0.0");
+  s_n2k->SetProductInformation("WS4BOAT", 100, "ESP32-S3 WS4 Boat Display", "1.0", "1.0");
   s_n2k->SetDeviceInformation(unique, 130 /*display*/, 120 /*display class*/, 2046 /*unregistered*/);
 
   s_n2k->SetMode(N2K_LISTEN_ONLY ? tNMEA2000::N2km_ListenOnly : tNMEA2000::N2km_ListenAndNode, 40);
@@ -223,8 +224,8 @@ void n2kStart() {
   s_devList = new tN2kDeviceList(s_n2k);
 
   bool ok = s_n2k->Open();
-  logf("N2K: CAN TX=%d RX=%d, %s, open %s", (int)N2K_CAN_TX_PIN, (int)N2K_CAN_RX_PIN,
-       N2K_LISTEN_ONLY ? "listen-only" : "node", ok ? "OK" : "FAILED");
+  (ok ? logf : log_fault)("N2K: CAN TX=%d RX=%d, %s, open %s", (int)N2K_CAN_TX_PIN, (int)N2K_CAN_RX_PIN,
+                          N2K_LISTEN_ONLY ? "listen-only" : "node", ok ? "OK" : "FAILED");
   logf("N2K: Engine tab shows \"%s\" instance %u, source %s", n2kSettings.engName,
        n2kSettings.engInstance, n2kSettings.engSource == 255 ? "any" : String(n2kSettings.engSource).c_str());
 

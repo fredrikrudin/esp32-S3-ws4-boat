@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 /* Two extras that use the TF card:
  *  - measurements as CSV (/data.csv), one line per interval, for graphing later
  *  - settings backup and restore (/settings.json), so a flash erase isn't fatal
@@ -8,10 +9,10 @@
 #include "n2k_settings.h"
 
 #define CSV_NAME "/data.csv"
-/* followed by the NMEA 2000 columns from n2kCsvHeader() */
 #define CSV_HEADER "time,uptime_s,soc,batt_v,batt_a,batt_w,solar_w,yield_kwh,temp1,temp2,temp3,outside"
+/* followed by the NMEA 2000 columns from n2kCsvHeader() */
 
-static char csv_msg[64] = "Not started";
+static char csv_msg[64] = N_("Not started");
 
 const char *csv_status() {
   return csv_msg;
@@ -20,7 +21,7 @@ const char *csv_status() {
 /* One line of measurements; called from loop() via csv_service() */
 static void csv_write_line() {
   if (!sd_log_ok()) {
-    strlcpy(csv_msg, "No card mounted", sizeof(csv_msg));
+    strlcpy(csv_msg, TR("No card mounted"), sizeof(csv_msg));
     return;
   }
   uint32_t now = millis();
@@ -49,7 +50,6 @@ static void csv_write_line() {
       ba = dat[i].batt_i;
     }
   }
-
   /* temperatures */
   float t[MAX_RUUVI];
   for (int i = 0; i < MAX_RUUVI; i++) t[i] = NAN;
@@ -84,7 +84,7 @@ static void csv_write_line() {
   bool need_header = !sd_fs().exists(CSV_NAME);
   File f = sd_fs().open(CSV_NAME, FILE_APPEND);
   if (!f) {
-    strlcpy(csv_msg, "Cannot write data.csv", sizeof(csv_msg));
+    strlcpy(csv_msg, TR("Cannot write data.csv"), sizeof(csv_msg));
     return;
   }
   if (need_header) {
@@ -108,11 +108,11 @@ static void csv_write_line() {
   num(t[1], 1);
   num(t[2], 1);
   num(w.valid ? w.temp : NAN, 1);
-  f.print(line);                 // ends with a comma
-  f.println(n2kCsvLine());       // depth, speed, engine, tanks ...
+  f.print(line);            // ends with a comma
+  f.println(n2kCsvLine());  // depth, speed, engine, tanks ...
   f.close();
 
-  snprintf(csv_msg, sizeof(csv_msg), "Last entry %s", ts[0] ? ts : "(no time yet)");
+  snprintf(csv_msg, sizeof(csv_msg), TR("Last entry %s"), ts[0] ? ts : TR("(no time yet)"));
 }
 
 /* Called from loop(): writes a line every csv_interval_min minutes */
@@ -167,6 +167,8 @@ bool settings_backup() {
   doc["webpass"] = g.web_pass;
   doc["webname"] = g.web_name;
   doc["ruuvis"] = to_hex((const uint8_t *)ruuvi_cfg, sizeof(ruuvi_cfg));
+  doc["alarm"] = to_hex((const uint8_t *)&alarm_cfg, sizeof(alarm_cfg));
+  doc["splash"] = to_hex((const uint8_t *)&splash_cfg, sizeof(splash_cfg));
   UNLOCK();
 
   xSemaphoreTake(vic_mtx, portMAX_DELAY);
@@ -176,8 +178,13 @@ bool settings_backup() {
   doc["scanint"] = scan_interval_s;
   doc["bl"] = bl_normal;
   doc["blsaver"] = bl_saver;
-  doc["feat"] = (feat_ruuvi ? 0x01 : 0) | (feat_sdlog ? 0x20 : 0) | (feat_csv ? 0x40 : 0);
+  doc["feat"] = (feat_ruuvi ? 0x01 : 0) | (feat_sdlog ? 0x20 : 0) | (feat_csv ? 0x40 : 0) | (feat_powersave ? 0 : 0x80);
+  doc["noweb"] = feat_web ? 0 : 1;
   doc["csvmin"] = csv_interval_min;
+  doc["battmode"] = feat_battmode ? 1 : 0;
+  doc["battpct"] = batt_shutdown_pct;
+  doc["serial"] = (bool)feat_serial;
+  doc["lang"] = ui_lang;
   n2kBackup(doc);  // engine choice, tank names, gauge ranges and limits
 
   File f = sd_fs().open("/settings.json", FILE_WRITE);
@@ -197,7 +204,7 @@ bool settings_restore() {
   DeserializationError err = deserializeJson(doc, f);
   f.close();
   if (err) {
-    logf("Restore failed: %s", err.c_str());
+    log_fault("Restore failed: %s", err.c_str());
     return false;
   }
 
@@ -215,7 +222,17 @@ bool settings_restore() {
   prefs.putUChar("bl", doc["bl"] | 100);
   prefs.putUChar("blsaver", doc["blsaver"] | 10);
   prefs.putUChar("feat", doc["feat"] | 0x01);
+  prefs.putUChar("noweb", doc["noweb"] | 0);
   prefs.putUChar("csvmin", doc["csvmin"] | 5);
+  prefs.putUChar("battmode", doc["battmode"] | 0);
+  prefs.putUChar("battpct", doc["battpct"] | 20);
+  prefs.putBool("serial", doc["serial"] | false);
+  prefs.putString("lang", (const char *)(doc["lang"] | "en"));
+
+  static AlarmCfg ac;
+  if (from_hex(doc["alarm"] | "", (uint8_t *)&ac, sizeof(ac))) prefs.putBytes("alarm", &ac, sizeof(ac));
+  static SplashCfg spc;
+  if (from_hex(doc["splash"] | "", (uint8_t *)&spc, sizeof(spc))) prefs.putBytes("splash", &spc, sizeof(spc));
 
   static RuuviCfg rc[MAX_RUUVI];
   if (from_hex(doc["ruuvis"] | "", (uint8_t *)rc, sizeof(rc))) prefs.putBytes("ruuvis", rc, sizeof(rc));

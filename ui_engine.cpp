@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // ui_engine.cpp - Engine tab, analog gauge style
 //
 //  +--------------------------------------------+
@@ -23,27 +24,28 @@
 #include "n2k_settings.h"
 #include "n2k_limits.h"
 
+/* The names are stored in English and shown translated ("Port" -> "Babord") */
 struct EnginePreset { uint8_t instance; const char *name; };
 static const EnginePreset PRESETS[] = {
-  { 0, "Motor"    },
-  { 0, "Babord"   },
-  { 1, "Styrbord" },
-  { 2, "Motor 3"  },
-  { 3, "Motor 4"  },
+  { 0, N_("Engine")    },
+  { 0, N_("Port")      },
+  { 1, N_("Starboard") },
+  { 2, N_("Engine 3")  },
+  { 3, N_("Engine 4")  },
 };
-static const char *PRESET_OPTS =
-  "Single engine (0)\nBabord / Port (0)\nStyrbord / Stbd (1)\nInstance 2\nInstance 3";
+static const char *PRESET_OPTS = N_(
+  "Single engine (0)\nPort (0)\nStarboard (1)\nInstance 2\nInstance 3");
 static const int PRESET_N = sizeof(PRESETS) / sizeof(PRESETS[0]);
 
 // PGN 127489 discrete status bits
 static const char *STATUS1_TXT[16] = {
-  "CHECK ENGINE", "OVER TEMP", "LOW OIL PRESS", "LOW OIL LEVEL", "LOW FUEL PRESS",
-  "LOW VOLTAGE", "LOW COOLANT", "WATER FLOW", "WATER IN FUEL", "CHARGE",
-  "PREHEAT", "HIGH BOOST", "REV LIMIT", "EGR", "THROTTLE SENSOR", "EMERGENCY STOP"
+  N_("CHECK ENGINE"), N_("OVER TEMP"), N_("LOW OIL PRESS"), N_("LOW OIL LEVEL"), N_("LOW FUEL PRESS"),
+  N_("LOW VOLTAGE"), N_("LOW COOLANT"), N_("WATER FLOW"), N_("WATER IN FUEL"), N_("CHARGE"),
+  N_("PREHEAT"), N_("HIGH BOOST"), N_("REV LIMIT"), N_("EGR"), N_("THROTTLE SENSOR"), N_("EMERGENCY STOP")
 };
 static const char *STATUS2_TXT[8] = {
-  "WARNING 1", "WARNING 2", "POWER REDUCED", "MAINTENANCE", "ENGINE COMM",
-  "SUB THROTTLE", "NEUTRAL START", "SHUTTING DOWN"
+  N_("WARNING 1"), N_("WARNING 2"), N_("POWER REDUCED"), N_("MAINTENANCE"), N_("ENGINE COMM"),
+  N_("SUB THROTTLE"), N_("NEUTRAL START"), N_("SHUTTING DOWN")
 };
 
 static lv_obj_t *s_lblName, *s_dd;
@@ -72,6 +74,8 @@ static void reloadLimits(uint8_t e) {
 static int presetIndexFor(uint8_t inst, const char *name) {
   for (int i = 0; i < PRESET_N; i++)
     if (PRESETS[i].instance == inst && strcmp(PRESETS[i].name, name) == 0) return i;
+  if (inst == 0 && !strcmp(name, "Babord")) return 1;  // saved by earlier builds, in Swedish
+  if (inst == 1 && !strcmp(name, "Styrbord")) return 2;
   for (int i = 0; i < PRESET_N; i++)
     if (PRESETS[i].instance == inst) return i;
   return 0;
@@ -99,13 +103,22 @@ static lv_obj_t *column(lv_obj_t *parent, lv_coord_t w, lv_coord_t h) {
   return c;
 }
 
-static void tick(lv_timer_t *) {
+static void tick(lv_timer_t *t) {
   char buf[48];
   const uint8_t e = n2kSettings.engInstance;
 
+  /* ---- screensaver: keep the display on while engine data is shown.
+     lv_obj_is_visible() is false when another tab is selected (tab scrolled off screen)
+     or when a different screen (e.g. the screensaver screen) is loaded. */
+  bool shown = lv_obj_is_visible(s_tab) && tab_visible(tab_engine);
+  if (t && !shown) {  // nothing to redraw, and nothing to keep awake for
+    s_keepAwake = false;
+    return;
+  }
+
   if (s_shownVer != n2kSettingsVersion()) {
     s_shownVer = n2kSettingsVersion();
-    snprintf(buf, sizeof(buf), "%s  #%u", n2kSettings.engName, e);
+    snprintf(buf, sizeof(buf), "%s  #%u", tr(n2kSettings.engName), e);
     lv_label_set_text(s_lblName, buf);
     lv_dropdown_set_selected(s_dd, presetIndexFor(e, n2kSettings.engName));
   }
@@ -165,10 +178,6 @@ static void tick(lv_timer_t *) {
   for (int i = 0; i < 16 && !fault; i++) if (b1 & (1u << i)) fault = STATUS1_TXT[i];
   for (int i = 0; i < 8 && !fault; i++)  if (b2 & (1u << i)) fault = STATUS2_TXT[i];
 
-  // ---- screensaver: keep the display on while engine data is shown.
-  // lv_obj_is_visible() is false when another tab is selected (tab scrolled off screen)
-  // or when a different screen (e.g. a screensaver screen) is loaded.
-  bool shown = lv_obj_is_visible(s_tab);
 #if ENG_KEEP_AWAKE == 1
   s_keepAwake = shown;
 #elif ENG_KEEP_AWAKE == 2
@@ -179,7 +188,7 @@ static void tick(lv_timer_t *) {
   if (s_keepAwake) lv_disp_trig_activity(nullptr);   // resets lv_disp_get_inactive_time()
 
   if (fault) {
-    snprintf(buf, sizeof(buf), LV_SYMBOL_WARNING "\n%s", fault);
+    snprintf(buf, sizeof(buf), LV_SYMBOL_WARNING "\n%s", tr(fault));
     uiTileSet(s_status, buf, UI_ALARM);
   } else if (running) {
     uiTileSet(s_status, LV_SYMBOL_OK " RUN", UI_OK);
@@ -224,7 +233,7 @@ void ui_engine_create(lv_obj_t *tab) {
   s_oilT = uiTile(left, "Oil temp", "\xC2\xB0""C", UI_FONT_L, sideW, tileH);
   s_fuel = uiTile(left, "Fuel",     "L/h",          UI_FONT_L, sideW, tileH);
 
-  const UiGaugeCfg rpmCfg = { "RPM x100", 0.01f, 240, rowH, UI_FONT_XL, UI_FONT_M, 0 };
+  const UiGaugeCfg rpmCfg = { N_("RPM x100"), 0.01f, 240, rowH, UI_FONT_XL, UI_FONT_M, 0 };
   s_rpm = uiGauge(row, rpmCfg, L_RPM);
 
   lv_obj_t *right = column(row, sideW, rowH);
@@ -240,9 +249,9 @@ void ui_engine_create(lv_obj_t *tab) {
   lv_obj_set_flex_flow(bottom, LV_FLEX_FLOW_ROW);
   lv_obj_set_flex_align(bottom, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-  const UiGaugeCfg coolCfg = { "Coolant \xC2\xB0""C", 1, 240, gs, UI_FONT_M, UI_FONT_S, 0 };
-  const UiGaugeCfg oilCfg  = { "Oil bar",             1, 240, gs, UI_FONT_M, UI_FONT_S, 1 };
-  const UiGaugeCfg voltCfg = { "Alt V",               1, 240, gs, UI_FONT_M, UI_FONT_S, 1 };
+  const UiGaugeCfg coolCfg = { N_("Coolant \xC2\xB0""C"), 1, 240, gs, UI_FONT_M, UI_FONT_S, 0 };
+  const UiGaugeCfg oilCfg  = { N_("Oil bar"),             1, 240, gs, UI_FONT_M, UI_FONT_S, 1 };
+  const UiGaugeCfg voltCfg = { N_("Alt V"),               1, 240, gs, UI_FONT_M, UI_FONT_S, 1 };
   s_cool = uiGauge(bottom, coolCfg, L_COOL);
   s_oilP = uiGauge(bottom, oilCfg,  L_OILP);
   s_volt = uiGauge(bottom, voltCfg, L_VOLT);

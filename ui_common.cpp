@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 /* UI core: tabview, on-screen keyboard, widget helpers, timers.
    All LVGL code runs in the Arduino loop task only. */
 #include "app.h"
@@ -22,20 +23,31 @@ static const lv_btnmatrix_ctrl_t hex_kb_ctrl[] = {
 };
 
 /* ---------- keyboard ---------- */
+/* The settings page now has sub-pages, so pad the one that really scrolls */
+static lv_obj_t *kb_pad_target = NULL;
+
+static lv_obj_t *scrolling_parent(lv_obj_t *o) {
+  for (lv_obj_t *p = lv_obj_get_parent(o); p; p = lv_obj_get_parent(p))
+    if (lv_obj_has_flag(p, LV_OBJ_FLAG_SCROLLABLE)) return p;
+  return tab_settings;
+}
+
 void kb_show(lv_obj_t *ta) {
   // text areas made with hex = true get the hex keypad
   lv_keyboard_set_mode(kb, lv_obj_has_flag(ta, LV_OBJ_FLAG_USER_1) ? LV_KEYBOARD_MODE_USER_1 : LV_KEYBOARD_MODE_TEXT_LOWER);
   lv_keyboard_set_textarea(kb, ta);
   lv_obj_clear_flag(kb, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_set_style_pad_bottom(tab_settings, KB_H, 0);  // room to scroll above the keyboard
-  lv_obj_update_layout(tab_settings);
+  kb_pad_target = scrolling_parent(ta);
+  lv_obj_set_style_pad_bottom(kb_pad_target, KB_H, 0);  // room to scroll above the keyboard
+  lv_obj_update_layout(kb_pad_target);
   lv_obj_scroll_to_view_recursive(ta, LV_ANIM_ON);
 }
 
 void kb_hide() {
   lv_keyboard_set_textarea(kb, NULL);
   lv_obj_add_flag(kb, LV_OBJ_FLAG_HIDDEN);
-  lv_obj_set_style_pad_bottom(tab_settings, settings_pad_bottom, 0);
+  if (kb_pad_target) lv_obj_set_style_pad_bottom(kb_pad_target, 16, 0);
+  kb_pad_target = NULL;
 }
 
 /* The OK key calls the on_ready function given to make_ta() */
@@ -56,7 +68,7 @@ static void ta_event_cb(lv_event_t *e) {
   }
 }
 
-/* Tabs by id: 0 Home, 1 Nav, 2 Engine, 3 Tanks, 4 Power, 5 Temp, 6 Weather, 7 Settings */
+/* Tabs by id: 0 Home, 1 Nav, 2 Engine, 3 Tanks, 4 Power, 5 Ruuvi, 6 Weather, 7 Settings */
 uint16_t ui_active_tab() {
   return tabview ? lv_tabview_get_tab_act(tabview) : 0;
 }
@@ -152,10 +164,13 @@ lv_obj_t *make_slider(lv_obj_t *parent, int min, int max, int val, lv_event_cb_t
 
 /* Segmented Off | On control, in the style of the Victron switch pane.
    The caller gets the button matrix; use set_segment() to show the state. */
-static const char *seg_map[] = { "Off", "On", "" };
+static const char *seg_map[3];  // filled in make_segment(), translated
 
 lv_obj_t *make_segment(lv_obj_t *parent, lv_event_cb_t cb, void *user_data) {
   lv_obj_t *bm = lv_btnmatrix_create(parent);
+  seg_map[0] = TR("Off");
+  seg_map[1] = TR("On");
+  seg_map[2] = "";
   lv_btnmatrix_set_map(bm, seg_map);
   lv_obj_set_size(bm, LV_PCT(100), 52);
   lv_btnmatrix_set_btn_ctrl_all(bm, LV_BTNMATRIX_CTRL_CHECKABLE | LV_BTNMATRIX_CTRL_NO_REPEAT);
@@ -183,8 +198,57 @@ void set_segment(lv_obj_t *seg, bool on) {
   lv_btnmatrix_set_btn_ctrl(seg, on ? 1 : 0, LV_BTNMATRIX_CTRL_CHECKED);
 }
 
+/* A small graph with no axes, for the background of a tile or card.
+   Returns the chart; the series is the first one. */
+lv_obj_t *make_sparkline(lv_obj_t *parent, uint32_t color, int w, int h, int points) {
+  lv_obj_t *c = lv_chart_create(parent);
+  lv_obj_set_size(c, w, h);
+  lv_chart_set_type(c, LV_CHART_TYPE_LINE);
+  lv_chart_set_point_count(c, points);
+  lv_chart_set_div_line_count(c, 0, 0);
+  lv_obj_set_style_bg_opa(c, LV_OPA_TRANSP, 0);
+  lv_obj_set_style_border_width(c, 0, 0);
+  lv_obj_set_style_pad_all(c, 0, 0);
+  lv_obj_set_style_size(c, 0, LV_PART_INDICATOR);  // no dots
+  lv_obj_set_style_line_width(c, 2, LV_PART_ITEMS);
+  lv_obj_clear_flag(c, LV_OBJ_FLAG_CLICKABLE);
+  lv_obj_clear_flag(c, LV_OBJ_FLAG_SCROLLABLE);
+  lv_chart_add_series(c, lv_color_hex(color), LV_CHART_AXIS_PRIMARY_Y);
+  return c;
+}
+
+/* Fills a sparkline from an array, scaling itself; NAN leaves a gap */
+void set_sparkline(lv_obj_t *chart, const float *values, int n, float floor_max) {
+  lv_chart_series_t *s = lv_chart_get_series_next(chart, NULL);
+  if (!s) return;
+  float mn = 1e9f, mx = -1e9f;
+  for (int i = 0; i < n; i++) {
+    if (isnan(values[i])) continue;
+    if (values[i] < mn) mn = values[i];
+    if (values[i] > mx) mx = values[i];
+  }
+  if (mn > mx) {  // nothing to show
+    for (int i = 0; i < n; i++) lv_chart_set_value_by_id(chart, s, i, LV_CHART_POINT_NONE);
+    return;
+  }
+  if (mx < floor_max) mx = floor_max;  // keep a flat line from filling the whole height
+  if (mx - mn < 1) mn = mx - 1;
+  lv_chart_set_range(chart, LV_CHART_AXIS_PRIMARY_Y, (int)mn, (int)(mx + 1));
+  for (int i = 0; i < n; i++)
+    lv_chart_set_value_by_id(chart, s, i, isnan(values[i]) ? LV_CHART_POINT_NONE : (int)values[i]);
+}
+
+/* True when this tab is the one on screen and the screen saver isn't showing.
+   Timers use it to skip formatting nobody can see, which is most of the work. */
+bool tab_visible(lv_obj_t *tab) {
+  if (!tabview || !tab) return true;
+  if (lv_scr_act() != lv_obj_get_screen(tabview)) return false;  // screen saver or history
+  return lv_tabview_get_tab_act(tabview) == lv_obj_get_index(tab);
+}
+
 void set_label(lv_obj_t *l, const char *txt) {
-  if (strcmp(lv_label_get_text(l), txt)) lv_label_set_text(l, txt);
+  txt = tr(txt);
+  if (strcmp(lv_label_get_text(l), txt)) (lv_label_set_text)(l, txt);
 }
 
 /* Tabs of switched-off features are hidden: their button is not drawn and is
@@ -196,13 +260,23 @@ void ui_update_tabs() {
     uint16_t id;
     volatile bool *feature;
   } tabs[] = {
-    { 5, &feat_ruuvi },   // Temp
+    { 5, &feat_ruuvi },  // Ruuvi
   };
+  const bool wanted[] = { feat_ruuvi };
+
+  /* nothing to do unless something actually changed */
+  static int last_mask = -1;
+  int mask = 0;
+  for (unsigned i = 0; i < sizeof(wanted) / sizeof(wanted[0]); i++) mask |= wanted[i] << i;
+  if (mask == last_mask) return;
+  last_mask = mask;
 
   uint16_t act = lv_tabview_get_tab_act(tabview);
   bool act_hidden = false;
+  int idx = -1;
   for (auto &t : tabs) {
-    if (*t.feature) {
+    idx++;
+    if (wanted[idx]) {
       lv_btnmatrix_clear_btn_ctrl(btns, t.id, LV_BTNMATRIX_CTRL_HIDDEN);
       lv_btnmatrix_clear_btn_ctrl(btns, t.id, LV_BTNMATRIX_CTRL_DISABLED);
       lv_btnmatrix_set_btn_width(btns, t.id, 10);
@@ -213,11 +287,63 @@ void ui_update_tabs() {
       if (act == t.id) act_hidden = true;
     }
   }
-  /* the remaining tabs share the width evenly */
-  const uint16_t always_on[] = { 0, 1, 2, 3, 4, 6, 7 };
+  const uint16_t always_on[] = { 0, 1, 2, 3, 4, 6, 7 };  // all but Ruuvi
   for (uint16_t id : always_on) lv_btnmatrix_set_btn_width(btns, id, 10);
 
   if (act_hidden) lv_tabview_set_act(tabview, 0, LV_ANIM_OFF);
+}
+
+/* ---------- starting screen ---------- */
+static lv_obj_t *splash = NULL;
+
+/* The built-in Montserrat fonts; see lv_conf.h for which are enabled */
+const lv_font_t *splash_font(uint8_t size) {
+  switch (size) {
+    case 20: return ui_font(&lv_font_montserrat_20);
+    case 28: return ui_font(&lv_font_montserrat_28);
+    case 32: return ui_font(&lv_font_montserrat_32);
+    default: return ui_font(&lv_font_montserrat_48);
+  }
+}
+
+/* Drawn on the top layer, so the rest of the UI is built underneath it */
+void splash_show() {
+  if (!splash_cfg.seconds) return;  // switched off
+
+  ui_font_apply(lv_layer_top());
+  splash = lv_obj_create(lv_layer_top());
+  lv_obj_remove_style_all(splash);
+  lv_obj_set_size(splash, LV_PCT(100), LV_PCT(100));
+  lv_obj_set_style_bg_color(splash, lv_color_hex(0x15171A), 0);
+  lv_obj_set_style_bg_opa(splash, LV_OPA_COVER, 0);
+  lv_obj_clear_flag(splash, LV_OBJ_FLAG_SCROLLABLE);
+
+  lv_obj_t *name = lv_label_create(splash);
+  lv_label_set_text(name, splash_cfg.text);
+  lv_obj_set_style_text_font(name, splash_font(splash_cfg.size), 0);
+  lv_obj_set_style_text_color(name, lv_color_make(splash_cfg.r, splash_cfg.g, splash_cfg.b), 0);
+  lv_obj_set_style_text_letter_space(name, 6, 0);
+  lv_obj_align(name, LV_ALIGN_CENTER, 0, -20);
+
+  lv_obj_t *sub = lv_label_create(splash);
+  lv_label_set_text(sub, "starting...");
+  lv_obj_set_style_text_color(sub, lv_color_hex(0x9E9E9E), 0);
+  lv_obj_align(sub, LV_ALIGN_CENTER, 0, 30);
+
+  lv_timer_handler();  // on screen before the slow parts of setup begin
+}
+
+/* Keeps it up for the chosen number of seconds from power-on */
+void splash_finish() {
+  uint32_t until = splash_cfg.seconds * 1000UL;
+  while (millis() < until) {
+    lv_timer_handler();
+    delay(5);
+  }
+  if (splash) {
+    lv_obj_del(splash);
+    splash = NULL;
+  }
 }
 
 /* ---------- build everything ---------- */
@@ -227,24 +353,30 @@ void build_ui() {
                                          lv_palette_main(LV_PALETTE_BLUE),
                                          lv_palette_main(LV_PALETTE_RED),
                                          true,  // dark mode
-                                         LV_FONT_DEFAULT);
+                                         FONT_UI);
   lv_disp_set_theme(disp, th);
+  /* the theme already exists (made when the display was registered) and keeps
+     its font, so give the translated font to the screen and layers instead */
+  ui_font_apply(lv_scr_act());
+  ui_font_apply(lv_layer_top());
+  ui_font_apply(lv_layer_sys());
 
   lv_obj_t *tv = lv_tabview_create(lv_scr_act(), LV_DIR_TOP, 50);
   tabview = tv;
-  /* tab ids are used by ui_update_tabs(): 0 Home, 1 Nav, 2 Engine, 3 Tanks, 4 Power, 5 Temp, 6 Weather, 7 Settings */
+  /* tab ids are used by ui_update_tabs() and ui_show_tab():
+     0 Home, 1 Nav, 2 Engine, 3 Tanks, 4 Power, 5 Ruuvi, 6 Weather, 7 Settings */
   tab_home = lv_tabview_add_tab(tv, LV_SYMBOL_HOME);  // start page
   tab_nav = lv_tabview_add_tab(tv, "Nav");
   tab_engine = lv_tabview_add_tab(tv, "Engine");
   tab_tanks = lv_tabview_add_tab(tv, "Tanks");
   tab_power = lv_tabview_add_tab(tv, "Power");
-  tab_temp = lv_tabview_add_tab(tv, "Temp");
+  tab_temp = lv_tabview_add_tab(tv, "Ruuvi");
   tab_weather = lv_tabview_add_tab(tv, "Weather");
   tab_settings = lv_tabview_add_tab(tv, LV_SYMBOL_SETTINGS);  // gear icon
   settings_pad_bottom = lv_obj_get_style_pad_bottom(tab_settings, LV_PART_MAIN);
 
   build_home_tab();
-  ui_nav_create(tab_nav);        // NMEA 2000 tabs start their own update timers
+  ui_nav_create(tab_nav);  // the NMEA 2000 tabs start their own update timers
   ui_engine_create(tab_engine);
   ui_tanks_create(tab_tanks);
   build_power_tab();
@@ -265,6 +397,7 @@ void build_ui() {
   lv_timer_create(clock_timer_cb, 500, NULL);
   lv_timer_create(net_poll_cb, 200, NULL);
   lv_timer_create(ruuvi_timer_cb, 1000, NULL);
+  lv_timer_create([](lv_timer_t *t) { alarms_check(); }, 1000, NULL);
   lv_timer_create(home_timer_cb, 500, NULL);  // 500 ms: the alarm banner blinks
   lv_timer_create(power_timer_cb, 1000, NULL);
   lv_timer_create(saver_timer_cb, 500, NULL);

@@ -1,38 +1,36 @@
+// esp32-S3-ws4-boat v1.0
 /* Logging to the Serial Monitor, to a ring buffer in PSRAM (readable at /log in
    the browser) and, if switched on, to the TF card.
-   The card is mounted in setup() (when the log or the CSV log is switched on) or
-   with the Mount button in Settings; logf() itself never mounts or unmounts.
    The card uses SDMMC in 1-bit mode: GPIO2 clock, GPIO1 command, GPIO4 data,
    so no chip-select pin is needed. Those pins are shared with the display's
    configuration SPI, which is only used while the panel starts up. */
 #include "app.h"
 #include <SD_MMC.h>
-#include <SD.h>
-#include <SPI.h>
 #include <Wire.h>
-#include <esp_log.h>
+#include <SPI.h>
+#include <SD.h>
 #include "WS_CH32_IO.h"
+#include <esp_log.h>
 
 #define SD_CLK 2  // also LCD_SCL: the panel only uses it while starting up
 #define SD_CMD 1  // also LCD_SDA
 #define SD_D0 4
-/* The V4 board wires the card for SPI (SCK 2, MOSI 1, MISO 4); chip select is
-   handled on the board. The SD library is handed a pin it can toggle
-   harmlessly (GPIO44, RS485 TX, unused here). */
+/* SPI mode: SCK=2, MOSI=1, MISO=4. Waveshare's own description for this board
+   says the card's chip select is pulled low by the I2C expander, so the SD
+   library is handed a pin it can toggle harmlessly (GPIO44, RS485 TX, unused). */
 #define SD_SPI_CS 44
 #define LOG_RING 12288  // bytes kept for the web view (smaller = less PSRAM traffic)
 #define SD_FLUSH_MS 5000  // how often the file is flushed
 
 static SemaphoreHandle_t log_mtx;
-static bool sd_spi = false;  // true = mounted over SPI, false = SD (SDMMC) mode
-static SemaphoreHandle_t mount_mtx;  // one mount at a time (setup and Settings buttons)
 static char *ring = nullptr;  // in PSRAM
 static size_t ring_len = 0;   // bytes used (grows to LOG_RING, then wraps)
 static size_t ring_pos = 0;
 static bool ring_wrapped = false;
 
 static bool sd_mounted = false;
-static char sd_msg[64] = "Not started";
+static bool sd_spi = false;  // true = mounted over SPI, false = SD (SDMMC) mode
+static char sd_msg[64] = N_("Not started");
 static File log_file;
 static char log_name[32] = "/boat.log";
 static uint32_t last_flush = 0;
@@ -50,27 +48,23 @@ static void ring_write(const char *s, size_t n) {
   ring_len = ring_wrapped ? LOG_RING : ring_pos;
 }
 
-/* Mounting happens in setup() and from the Settings buttons, never inside logf():
-   it can take several seconds, and logf() holds the log lock.
-
-   Waveshare's own SD demo sets the three pins and mounts in 1-bit mode, but it
+/* Waveshare's own SD demo sets the three pins and mounts in 1-bit mode, but it
    also waits 3 s after starting the CH32 chip, which powers parts of the board.
    Mounting too early is the most likely reason a card is not found, so the same
-   wait is honoured here, and slower bus speeds are tried before giving up.
-   The slow part runs without the log lock, so logging carries on meanwhile. */
-/* GPIO2 and GPIO1 are also the display's setup bus (SCK and MOSI). After the
+   wait is honoured here, and slower bus speeds are tried before giving up. */
+/* One mount attempt at a given speed; 0 = library default.
+   GPIO2 and GPIO1 are also the display's setup bus (SCK and MOSI). Once the
    panel has started they stay configured as plain outputs, which stops the
-   card answering, so they are released and given pull-ups first. */
+   card's answers on the command line from getting through - so the pins are
+   released and given pull-ups first, as an SD bus needs. */
 static void release_pins() {
   gpio_reset_pin((gpio_num_t)SD_CLK);
   gpio_reset_pin((gpio_num_t)SD_CMD);
   gpio_reset_pin((gpio_num_t)SD_D0);
-  pinMode(SD_CMD, INPUT_PULLUP);
-  pinMode(SD_D0, INPUT_PULLUP);
   delay(5);
 }
 
-/* SPI attempt, expander untouched: this is what works on the V4 board */
+/* SPI attempt that leaves the expander alone */
 static bool try_mount_spi_raw(uint32_t freq) {
   release_pins();
   SPI.end();
@@ -84,17 +78,30 @@ static bool try_mount_spi_raw(uint32_t freq) {
   return false;
 }
 
-/* SPI attempt with one expander bit pulled low (for other board revisions) */
+/* SPI mode, with the expander bit that holds chip select pulled LOW */
 static bool try_mount_spi(uint8_t cs_bits, uint32_t freq) {
-  WS_CH32_IO::writeRegister(Wire, WS_CH32_IO::REG_OUTPUT, WS_CH32_IO::OUT_DISPLAY_ON & ~cs_bits);
-  delay(30);
-  return try_mount_spi_raw(freq);
+  uint8_t out = WS_CH32_IO::OUT_DISPLAY_ON & ~cs_bits;  // chip select low, display bits kept
+  WS_CH32_IO::writeRegister(Wire, WS_CH32_IO::REG_OUTPUT, out);
+  release_pins();
+  SPI.end();
+  SPI.begin(SD_CLK, SD_D0, SD_CMD, -1);  // SCK, MISO, MOSI
+  if (SD.begin(SD_SPI_CS, SPI, freq) && SD.cardType() != CARD_NONE) {
+    sd_spi = true;
+    return true;
+  }
+  SD.end();
+  return false;
 }
 
-/* SD (SDMMC) mode attempt; 0 = library default speed */
-static bool try_mount_sdmmc(int freq) {
+static bool try_mount(int freq) {
   sd_spi = false;
-  release_pins();
+  gpio_reset_pin((gpio_num_t)SD_CLK);
+  gpio_reset_pin((gpio_num_t)SD_CMD);
+  gpio_reset_pin((gpio_num_t)SD_D0);
+  pinMode(SD_CMD, INPUT_PULLUP);
+  pinMode(SD_D0, INPUT_PULLUP);
+  delay(5);
+
   SD_MMC.setPins(SD_CLK, SD_CMD, SD_D0);
   bool ok = freq ? SD_MMC.begin("/sdcard", true, false, freq) : SD_MMC.begin("/sdcard", true);
   if (ok && SD_MMC.cardType() != CARD_NONE) return true;
@@ -102,15 +109,20 @@ static bool try_mount_sdmmc(int freq) {
   return false;
 }
 
-/* Tries every combination and logs what works: both bus modes, both direction
-   register values, every expander bit. Reachable from Settings -> SD card. */
+/* The card's D3 line doubles as chip select: if it is low at power-up the card
+   starts in SPI mode and ignores SD-mode commands (error 0x107, send_op_cond
+   timeout). On this board that line goes to the CH32 chip, and which bit it is
+   differs between revisions - so read the registers and try the possibilities. */
 bool sd_log_probe() {
   uint8_t dir = 0, out = 0;
   bool have_dir = WS_CH32_IO::readRegister(Wire, WS_CH32_IO::REG_DIRECTION, &dir);
   bool have_out = WS_CH32_IO::readRegister(Wire, WS_CH32_IO::REG_OUTPUT, &out);
-  logf("SD probe: CH32 direction=0x%02X (%s), output=0x%02X (%s)", dir, have_dir ? "read" : "read failed",
-       out, have_out ? "read" : "read failed");
+  logf("SD probe: CH32 direction=0x%02X (%s), output=0x%02X (%s)",
+       dir, have_dir ? "read" : "read failed", out, have_out ? "read" : "read failed");
 
+  /* direction=0x00 means every expander pin is an input, so writing the output
+     register alone changes nothing - the direction has to be set as well. Which
+     value means "output" is not documented, so both are tried. */
   const uint8_t bits[] = { 0x01, 0x02, 0x04, 0x08, 0x10, 0x20, 0x40, 0x80 };
   const uint8_t dirs[] = { 0xFF, 0x00 };
   bool found = false;
@@ -118,32 +130,39 @@ bool sd_log_probe() {
   esp_log_level_set("sdmmc_common", ESP_LOG_NONE);
   esp_log_level_set("sdmmc_sd", ESP_LOG_NONE);
   esp_log_level_set("vfs_fat_sdmmc", ESP_LOG_NONE);
-  logf("SD probe: starting (SPI first, then SD mode)");
+  logf("SD probe: starting (SPI first; direction register included this time)");
 
+  /* nothing touched at all, in case the board handles it itself */
   if (try_mount_spi_raw(400000)) {
     logf("SD probe: >>> SPI works with the expander untouched <<<");
     found = true;
   }
-  for (uint8_t d : dirs) {
+
+  for (uint8_t dir : dirs) {
     if (found) break;
-    WS_CH32_IO::writeRegister(Wire, WS_CH32_IO::REG_DIRECTION, d);
+    WS_CH32_IO::writeRegister(Wire, WS_CH32_IO::REG_DIRECTION, dir);
     delay(20);
     for (uint8_t b : bits) {
-      if (try_mount_spi(b, 400000)) {
-        logf("SD probe: >>> SPI works: direction 0x%02X, bit 0x%02X low <<<", d, b);
+      /* SPI mode wants chip select low */
+      WS_CH32_IO::writeRegister(Wire, WS_CH32_IO::REG_OUTPUT, WS_CH32_IO::OUT_DISPLAY_ON & ~b);
+      delay(30);
+      if (try_mount_spi_raw(400000)) {
+        logf("SD probe: >>> SPI works: direction 0x%02X, bit 0x%02X low <<<", dir, b);
         found = true;
         break;
       }
+      /* SD mode wants it high */
       WS_CH32_IO::writeRegister(Wire, WS_CH32_IO::REG_OUTPUT, WS_CH32_IO::OUT_DISPLAY_ON | b);
       delay(30);
-      if (try_mount_sdmmc(SDMMC_FREQ_PROBING)) {
-        logf("SD probe: >>> SD mode works: direction 0x%02X, bit 0x%02X high <<<", d, b);
+      if (try_mount(SDMMC_FREQ_PROBING)) {
+        logf("SD probe: >>> SD mode works: direction 0x%02X, bit 0x%02X high <<<", dir, b);
         found = true;
         break;
       }
-      logf("SD probe: direction 0x%02X, bit 0x%02X -> no card either way", d, b);
+      logf("SD probe: direction 0x%02X, bit 0x%02X -> no card either way", dir, b);
     }
   }
+
   logf("SD probe: finished - %s", found ? "card found" : "no card in any combination");
   esp_log_level_set("sdmmc_common", ESP_LOG_ERROR);
   esp_log_level_set("sdmmc_sd", ESP_LOG_ERROR);
@@ -152,37 +171,42 @@ bool sd_log_probe() {
   if (!found) {  // put the expander back as it was
     if (have_dir) WS_CH32_IO::writeRegister(Wire, WS_CH32_IO::REG_DIRECTION, dir);
     WS_CH32_IO::writeRegister(Wire, WS_CH32_IO::REG_OUTPUT, have_out && out ? out : WS_CH32_IO::OUT_DISPLAY_ON);
-    return false;
   }
-  return sd_log_mount();  // open the log file on whatever mounted
+  if (found) {
+    uint64_t mb = (sd_spi ? SD.cardSize() : SD_MMC.cardSize()) / (1024 * 1024);
+    log_file = sd_fs().open(log_name, FILE_APPEND);
+    sd_mounted = (bool)log_file;
+    snprintf(sd_msg, sizeof(sd_msg), sd_mounted ? TR("Logging to %s (card %llu MB)") : TR("Card found but cannot write"),
+             log_name, (unsigned long long)mb);
+  } else {
+    strlcpy(sd_msg, TR("No card found (see the log)"), sizeof(sd_msg));
+  }
+  return found;
 }
 
+/* The V4 board wires the card for SPI (SCK 2, MOSI 1, MISO 4) with chip select
+   handled on the board, which is what the probe found. SD (SDMMC) mode, as in
+   Waveshare's own example, does not work here, so it is only a fallback. */
 bool sd_log_mount() {
   if (sd_mounted) return true;
-  if (!mount_mtx) return false;              // log_begin() not called yet
-  xSemaphoreTake(mount_mtx, portMAX_DELAY);
-  if (sd_mounted) {                          // mounted by someone else while we waited
-    xSemaphoreGive(mount_mtx);
-    return true;
-  }
 
   if (millis() < 3200) {  // as in Waveshare's example: let the board settle
     logf("SD: waiting for the board to settle before mounting");
     delay(3200 - millis());
   }
 
-  /* SPI first: that is how the V4 board is wired. SD mode stays as a fallback. */
+  const uint32_t speeds[] = { 20000000, 4000000, 400000 };
   bool ok = false;
-  for (uint32_t f : { 20000000u, 4000000u, 400000u }) {
+  for (uint32_t f : speeds) {
     if (try_mount_spi_raw(f)) {
       logf("SD: mounted over SPI at %lu kHz", (unsigned long)(f / 1000));
       ok = true;
       break;
     }
   }
-  if (!ok) {
+  if (!ok) {  // just in case a future board revision uses SD mode
     for (int f : { 0, SDMMC_FREQ_PROBING }) {
-      if (try_mount_sdmmc(f)) {
+      if (try_mount(f)) {
         logf("SD: mounted in SD mode");
         ok = true;
         break;
@@ -191,39 +215,29 @@ bool sd_log_mount() {
   }
 
   if (!ok) {
-    strlcpy(sd_msg, "No card found", sizeof(sd_msg));
-    logf("SD: no card found - use Probe card in Settings");
-    xSemaphoreGive(mount_mtx);
+    strlcpy(sd_msg, TR("No card found (retrying every minute)"), sizeof(sd_msg));
+    log_fault("SD: no card found - retrying every minute; use Probe card in Settings if it stays away");
     return false;
   }
 
   uint64_t mb = (sd_spi ? SD.cardSize() : SD_MMC.cardSize()) / (1024 * 1024);
-  File f = sd_fs().open(log_name, FILE_APPEND);
-  if (!f) {
+  log_file = sd_fs().open(log_name, FILE_APPEND);
+  if (!log_file) {
     if (sd_spi) SD.end();
     else SD_MMC.end();
-    strlcpy(sd_msg, "Card found, but cannot write", sizeof(sd_msg));
-    logf("SD: card found (%llu MB) but the file could not be opened - FAT32?", (unsigned long long)mb);
-    xSemaphoreGive(mount_mtx);
+    strlcpy(sd_msg, TR("Card found, but cannot write"), sizeof(sd_msg));
+    log_fault("SD: card found (%llu MB) but the file could not be opened - FAT32?", (unsigned long long)mb);
     return false;
   }
+  sd_mounted = true;
+  snprintf(sd_msg, sizeof(sd_msg), TR("Logging to %s (card %llu MB, %s)"), log_name, (unsigned long long)mb,
+           sd_spi ? TR("SPI") : TR("SD mode"));
+  logf("SD: mounted, card %llu MB (%s)", (unsigned long long)mb, sd_spi ? "SPI" : "SD mode");
   static bool header_written = false;  // once per boot, not once per mount
   if (!header_written) {
-    f.printf("\n--- board started, %lu ms ---\n", (unsigned long)millis());
+    log_file.printf("\n--- board started, %lu ms ---\n", (unsigned long)millis());
     header_written = true;
   }
-
-  /* publish under the log lock: from here on logf() writes to the file */
-  xSemaphoreTake(log_mtx, portMAX_DELAY);
-  log_file = f;
-  last_flush = millis();
-  sd_mounted = true;
-  snprintf(sd_msg, sizeof(sd_msg), "Logging to %s (card %llu MB, %s)", log_name, (unsigned long long)mb,
-           sd_spi ? "SPI" : "SD mode");
-  xSemaphoreGive(log_mtx);
-
-  logf("SD: mounted, card %llu MB (%s)", (unsigned long long)mb, sd_spi ? "SPI" : "SD mode");
-  xSemaphoreGive(mount_mtx);
   return true;
 }
 
@@ -232,15 +246,12 @@ fs::FS &sd_fs() {
 }
 
 void sd_log_unmount() {
-  if (!sd_mounted || !log_mtx) return;
-  xSemaphoreTake(log_mtx, portMAX_DELAY);  // not while logf() is writing
-  if (sd_mounted) {
-    log_file.close();
-    SD_MMC.end();
-    sd_mounted = false;
-    strlcpy(sd_msg, "Card not in use", sizeof(sd_msg));
-  }
-  xSemaphoreGive(log_mtx);
+  if (!sd_mounted) return;
+  log_file.close();
+  if (sd_spi) SD.end();
+  else SD_MMC.end();
+  sd_mounted = false;
+  strlcpy(sd_msg, TR("Card not in use"), sizeof(sd_msg));
 }
 
 bool sd_log_ok() {
@@ -257,17 +268,14 @@ size_t sd_log_size() {
 
 void log_begin() {
   log_mtx = xSemaphoreCreateMutex();
-  mount_mtx = xSemaphoreCreateMutex();
   ring = (char *)heap_caps_malloc(LOG_RING, MALLOC_CAP_SPIRAM);
   if (!ring) USBSerial.println("Log ring buffer allocation failed");
 }
 
-void logf(const char *fmt, ...) {
+/* One log line to USB serial (if wanted), the ring buffer behind /log and the card */
+static void log_line(bool to_serial, const char *fmt, va_list ap) {
   char buf[200];
-  va_list ap;
-  va_start(ap, fmt);
   int n = vsnprintf(buf, sizeof(buf) - 1, fmt, ap);
-  va_end(ap);
   if (n < 0) return;
   if (n > (int)sizeof(buf) - 2) n = sizeof(buf) - 2;
   if (n && buf[n - 1] != '\n') {  // every entry is one line
@@ -275,7 +283,7 @@ void logf(const char *fmt, ...) {
     buf[n] = 0;
   }
 
-  USBSerial.print(buf);
+  if (to_serial) USBSerial.print(buf);
   if (!log_mtx) return;
 
   if (xSemaphoreTake(log_mtx, pdMS_TO_TICKS(50)) != pdTRUE) {
@@ -283,16 +291,63 @@ void logf(const char *fmt, ...) {
     return;
   }
   ring_write(buf, n);
-  /* Only writes: mounting is done by setup() and the Settings buttons, and the card
-     stays mounted when this switch is off, because the CSV log may still use it. */
-  if (feat_sdlog && sd_mounted) {
-    log_file.print(buf);
-    if (millis() - last_flush > SD_FLUSH_MS) {
-      log_file.flush();
-      last_flush = millis();
+  if (feat_sdlog) {
+    /* a missing card must not mean a full mount attempt per log line */
+    static uint32_t next_try = 0;
+    if (!sd_mounted && (int32_t)(millis() - next_try) >= 0) {
+      next_try = millis() + 60000;  // try again in a minute
+      xSemaphoreGive(log_mtx);      // mounting is slow: don't hold the log lock
+      sd_log_mount();
+      xSemaphoreTake(log_mtx, portMAX_DELAY);
     }
+    if (sd_mounted) {
+      log_file.print(buf);
+      if (millis() - last_flush > SD_FLUSH_MS) {
+        log_file.flush();
+        last_flush = millis();
+      }
+    }
+  } else if (sd_mounted) {
+    sd_log_unmount();
   }
   xSemaphoreGive(log_mtx);
+}
+
+/* Normal log lines: always kept in /log and on the card, on USB serial only
+   when the serial monitor is switched on (Settings -> Device -> Debug) */
+void logf(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  log_line(feat_serial, fmt, ap);
+  va_end(ap);
+}
+
+/* Errors and warnings: on USB serial too, even with the serial monitor off */
+void log_fault(const char *fmt, ...) {
+  va_list ap;
+  va_start(ap, fmt);
+  log_line(true, fmt, ap);
+  va_end(ap);
+}
+
+/* Diagnostics for USB serial only (boot figures, BLE frames): serial monitor on */
+void serf(const char *fmt, ...) {
+  if (!feat_serial) return;
+  char buf[200];
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf, sizeof(buf), fmt, ap);
+  va_end(ap);
+  USBSerial.print(buf);
+}
+
+void serln(const char *s) {
+  if (feat_serial) USBSerial.println(s);
+}
+
+/* ESP-IDF's own messages (WiFi, SD driver ...): errors only unless the monitor is on */
+void serial_apply() {
+  esp_log_level_set("*", feat_serial ? ESP_LOG_WARN : ESP_LOG_ERROR);
 }
 
 /* Copies the ring buffer, oldest first, into the caller's String */
@@ -313,7 +368,7 @@ const char *sd_log_name() {
 /* Card type, size and how much is used */
 void sd_card_info(char *out, size_t n) {
   if (!sd_mounted) {
-    snprintf(out, n, "No card mounted");
+    snprintf(out, n, TR("No card mounted"));
     return;
   }
   const char *type = "unknown";
@@ -325,7 +380,7 @@ void sd_card_info(char *out, size_t n) {
   }
   uint64_t total = (sd_spi ? SD.totalBytes() : SD_MMC.totalBytes()) / (1024 * 1024);
   uint64_t used = (sd_spi ? SD.usedBytes() : SD_MMC.usedBytes()) / (1024 * 1024);
-  snprintf(out, n, "%s card, %llu MB used of %llu MB", type, (unsigned long long)used, (unsigned long long)total);
+  snprintf(out, n, TR("%s card, %llu MB used of %llu MB"), type, (unsigned long long)used, (unsigned long long)total);
 }
 
 /* Starts a new file: boat.log, boat-1.log, boat-2.log ... */
@@ -343,7 +398,7 @@ bool sd_log_new_file() {
   }
   log_file = sd_fs().open(log_name, FILE_WRITE);
   bool ok = (bool)log_file;
-  snprintf(sd_msg, sizeof(sd_msg), ok ? "Logging to %s" : "Could not create %s", log_name);
+  snprintf(sd_msg, sizeof(sd_msg), ok ? TR("Logging to %s") : TR("Could not create %s"), log_name);
   xSemaphoreGive(log_mtx);
   return ok;
 }
@@ -382,4 +437,24 @@ void sd_list_files(String &out) {
     f.close();
   }
   root.close();
+}
+
+/* One line per start, plus a warning when the build environment looks wrong.
+   LVGL's pool silently moving back into internal RAM (an updated lv_conf.h)
+   starved the UI and crashed it inside build_ui(); this makes that visible. */
+void log_boot_banner() {
+  logf("esp32-S3-ws4-boat %s, built " __DATE__ " " __TIME__, FW_VERSION);
+  logf("LVGL %d.%d.%d, pool %u kB, internal free %u, psram free %u",
+       LVGL_VERSION_MAJOR, LVGL_VERSION_MINOR, LVGL_VERSION_PATCH,
+       (unsigned)(LV_MEM_SIZE / 1024),
+       heap_caps_get_free_size(MALLOC_CAP_INTERNAL),
+       heap_caps_get_free_size(MALLOC_CAP_SPIRAM));
+#ifndef LV_MEM_POOL_ALLOC
+  log_fault("WARNING: LVGL's pool is in internal RAM. Put these in lv_conf.h:");
+  log_fault("  #define LV_MEM_POOL_INCLUDE <esp32-hal-psram.h>");
+  log_fault("  #define LV_MEM_POOL_ALLOC ps_malloc");
+  log_fault("  (without them the UI can run out of memory and crash in build_ui)");
+#endif
+  if (heap_caps_get_free_size(MALLOC_CAP_SPIRAM) < 1000000)
+    log_fault("WARNING: little or no PSRAM. Set Tools -> PSRAM to OPI PSRAM.");
 }

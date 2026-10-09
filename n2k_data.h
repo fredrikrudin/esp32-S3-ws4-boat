@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // n2k_data.h - generic, thread-safe store for values received from NMEA 2000
 //
 // Every value is a "channel" identified by (quantity, instance, sub):

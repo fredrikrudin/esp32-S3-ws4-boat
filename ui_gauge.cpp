@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // ui_gauge.cpp
 #include <math.h>
 #include <stdio.h>
@@ -17,7 +18,9 @@ static void tickLabelCb(lv_event_t *e) {
   lv_obj_draw_part_dsc_t *d = lv_event_get_draw_part_dsc(e);
   if (!d || d->class_p != &lv_meter_class || d->type != LV_METER_DRAW_PART_TICK || !d->text) return;
   int dec = (int)(intptr_t)lv_obj_get_user_data(lv_event_get_target(e));
-  lv_snprintf(d->text, d->text_length, "%.*f", dec, d->value / (float)MUL);
+  /* LVGL 8.4's meter leaves text_length at 0 for tick labels (its buffer is 16 bytes),
+     and lv_snprintf() has no %f unless LV_SPRINTF_USE_FLOAT is set: use snprintf() */
+  snprintf(d->text, d->text_length ? d->text_length : 16, "%.*f", dec, d->value / (float)MUL);
 }
 
 // Pick a "nice" major step (1/2/5 x 10^n) giving 2..5 major intervals

@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // n2k_limits.h - gauge ranges and warning/alarm limits per value, editable at runtime
 //
 // Limits are keyed by (quantity, instance, sub) - e.g. coolant temp of engine 0 or

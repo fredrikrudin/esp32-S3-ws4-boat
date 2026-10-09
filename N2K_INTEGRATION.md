@@ -1,3 +1,4 @@
+<!-- esp32-S3-ws4-boat v1.0 -->
 # NMEA 2000 in esp32-S3-ws4-boat
 
 How the NMEA 2000 part works: the on-board CAN transceiver, the PGNs that are
@@ -49,6 +50,10 @@ Settings keys:
 | `engine_source` | N2K source address, 255 = any | `23` |
 | `twin_engines` | 0 / 1: start page shows port and starboard RPM | `1` |
 | `port_name`, `stbd_name` | names on the two dials | `Babord` |
+
+Names that are still the defaults ("Engine", "Port", "Starboard", "Fresh water" ...) are
+shown in the display's language; a name you set is shown as typed. Å, Ä and Ö show while
+a language other than English is chosen.
 | `tank_name` | `fluidType,instance,name` | `1,0,Fresh water fwd` |
 | `limits` | `q,inst,sub,gauge_min,gauge_max,alarm_low,warn_low,warn_high,alarm_high` (empty = off) | `eng_coolant_t,0,0,40,120,,,90,98` |
 | `limits_reset` | `q,inst,sub` | `eng_coolant_t,0,0` |
@@ -79,6 +84,8 @@ at power-up); otherwise it is listed by manufacturer or as "Device <src>".
 ## Twin engines (two displays)
 
 N2K convention: engine instance **0 = port (babord) or single**, **1 = starboard (styrbord)**.
+The presets store the English names ("Port", "Starboard"), which the display translates;
+"Babord" and "Styrbord" saved by the first build are still recognised.
 Pick the preset in the Engine tab dropdown on each display, or set it via the web API.
 The choice is stored in flash.
 
@@ -108,7 +115,7 @@ Tanks need no code: any PGN 127505 fluid level appears on the Tanks tab automati
 - `N2K_LISTEN_ONLY true` (default): the display never transmits PGNs or claims an address.
   Set it to `false` if you want it to appear as a device in the Garmin device list.
 - Set `N2K_DEBUG_SERIAL 2` in `n2k_config.h` for a first test – every received PGN and
-  source is printed to Serial.
+  source is printed to USB serial (switch on Settings → Device → Debug → Serial monitor too).
 
 ## PGNs handled
 

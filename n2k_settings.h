@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // n2k_settings.h - persistent N2K settings (NVS namespace "n2k")
 //
 // Changes are made in RAM and written to flash by the network task

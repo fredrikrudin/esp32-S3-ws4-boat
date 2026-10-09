@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 /* Power tab: classic Victron overview style, built around the battery.
    The battery (SmartShunt) sits large in the middle. DC sources (solar, DC-DC)
    are on its left, the AC side (shore charger, inverter) on its right, and
@@ -19,7 +20,7 @@
 #define SHOW_HISTORY_BUTTON 0
 
 struct Tile {
-  lv_obj_t *box, *fill, *title, *big, *l1, *l2;
+  lv_obj_t *box, *fill, *title, *big, *l1, *l2, *spark;
   int w, h;
 };
 struct Flow {
@@ -126,6 +127,13 @@ static void make_tile(Tile &t, lv_obj_t *parent, const char *title, uint32_t col
   lv_obj_set_style_text_opa(t.l2, LV_OPA_80, 0);
   lv_obj_align(t.l2, LV_ALIGN_BOTTOM_MID, 0, -6);
   lv_label_set_text(t.l2, "");
+
+  /* last ten minutes, drawn faintly behind the text */
+  t.spark = make_sparkline(t.box, 0xFFFFFF, w - 8, 30, HIST_RECENT);
+  lv_obj_set_style_line_opa(t.spark, LV_OPA_50, LV_PART_ITEMS);
+  lv_obj_align(t.spark, LV_ALIGN_BOTTOM_MID, 0, -2);
+  lv_obj_move_background(t.spark);  // behind the labels
+  lv_obj_add_flag(t.spark, LV_OBJ_FLAG_HIDDEN);
 }
 
 void build_power_tab() {
@@ -140,12 +148,12 @@ void build_power_tab() {
   make_flow(flows[4], tab_power, COL_LOADS);
 
   /* side tiles are narrow; the battery is the big one in the middle */
-  make_tile(tiles[T_SOLAR], tab_power, "PV charger", COL_SOLAR, 120, 96);
-  make_tile(tiles[T_DCDC], tab_power, "DC-DC", COL_DCDC, 120, 96);
-  make_tile(tiles[T_AC], tab_power, "Shore charger", COL_AC, 120, 96);
-  make_tile(tiles[T_INV], tab_power, "Inverter", COL_INV, 120, 96);
-  make_tile(tiles[T_BATT], tab_power, "Battery", COL_BATT_BG, 160, 180);
-  make_tile(tiles[T_LOADS], tab_power, "DC loads", COL_LOADS, 160, 80);
+  make_tile(tiles[T_SOLAR], tab_power, TR("PV charger"), COL_SOLAR, 120, 96);
+  make_tile(tiles[T_DCDC], tab_power, TR("DC-DC"), COL_DCDC, 120, 96);
+  make_tile(tiles[T_AC], tab_power, TR("Shore charger"), COL_AC, 120, 96);
+  make_tile(tiles[T_INV], tab_power, TR("Inverter"), COL_INV, 120, 96);
+  make_tile(tiles[T_BATT], tab_power, TR("Battery"), COL_BATT_BG, 160, 180);
+  make_tile(tiles[T_LOADS], tab_power, TR("DC loads"), COL_LOADS, 160, 80);
 
   /* the side tiles have less room: move their lines up a little */
   const int side[4] = { T_SOLAR, T_DCDC, T_AC, T_INV };
@@ -258,6 +266,7 @@ void power_timer_cb(lv_timer_t *timer) {
 
   uint32_t now = millis();
   char b[96];
+  bool visible = tab_visible(tab_power);
   auto ok = [&](int i) {
     return i >= 0 && vic_fresh(dat[i], now) && dat[i].key_ok;
   };
@@ -311,6 +320,11 @@ void power_timer_cb(lv_timer_t *timer) {
     else lv_obj_clear_flag(lbl_power_empty, LV_OBJ_FLAG_HIDDEN);
   }
 
+  if (!visible) {  // nothing on screen: the settings list is all that still needs updating
+    victron_settings_refresh(cfg, dat, seen, now);
+    return;
+  }
+
   /* ---- solar ---- */
   if (has[T_SOLAR]) {
     int i = first[T_SOLAR];
@@ -321,10 +335,10 @@ void power_timer_cb(lv_timer_t *timer) {
     set_label(t.big, b);
     if (!ok(i)) set_label(t.l1, vic_status(dat[i], cfg[i].type, now));
     else if (n_solar > 1) {
-      snprintf(b, sizeof(b), "%d chargers", n_solar);
+      snprintf(b, sizeof(b), TR("%d chargers"), n_solar);
       set_label(t.l1, b);
     } else set_label(t.l1, vic_state_name(dat[i].state));
-    if (yield_any) snprintf(b, sizeof(b), "Today %.2f kWh", yield_sum);
+    if (yield_any) snprintf(b, sizeof(b), TR("Today %.2f kWh"), yield_sum);
     else b[0] = 0;
     set_label(t.l2, b);
     set_flow_dir(flows[0], pv_any && pv_sum > 2);
@@ -357,7 +371,7 @@ void power_timer_cb(lv_timer_t *timer) {
     else strcpy(b, "--");
     set_label(t.big, b);
     set_label(t.l1, ok(i) ? vic_state_name(dat[i].state) : vic_status(dat[i], cfg[i].type, now));
-    if (ok(i) && !isnan(dat[i].in_v)) snprintf(b, sizeof(b), "In %.2f V", dat[i].in_v);
+    if (ok(i) && !isnan(dat[i].in_v)) snprintf(b, sizeof(b), TR("In %.2f V"), dat[i].in_v);
     else b[0] = 0;
     set_label(t.l2, b);
     dcdc_active = ok(i) && vic_active_state(dat[i].state);
@@ -388,10 +402,10 @@ void power_timer_cb(lv_timer_t *timer) {
         if (!isnan(d.batt_v) && !isnan(d.batt_i)) snprintf(b, sizeof(b), "%+.0f W", d.batt_v * d.batt_i);
         if (!isnan(d.batt_i) && d.batt_i < -0.05f && d.remaining_min >= 0) {
           char tl[24];
-          snprintf(tl, sizeof(tl), "   %dh %02dm left", d.remaining_min / 60, d.remaining_min % 60);
+          snprintf(tl, sizeof(tl), TR("   %dh %02dm left"), d.remaining_min / 60, d.remaining_min % 60);
           strlcat(b, tl, sizeof(b));
         } else if (!isnan(d.batt_i) && d.batt_i > 0.05f) {
-          strlcat(b, "   Charging", sizeof(b));
+          strlcat(b, TR("   Charging"), sizeof(b));
         }
         if (!isnan(d.temp_c)) {
           char tc[16];
@@ -428,14 +442,14 @@ void power_timer_cb(lv_timer_t *timer) {
     Tile &t = tiles[T_INV];
     const VicData &d = dat[i];
     set_label(t.title, cfg[i].name);
-    if (ok(i) && !isnan(d.ac_va)) snprintf(b, sizeof(b), "%.0f VA", d.ac_va);
+    if (ok(i) && !isnan(d.ac_va)) snprintf(b, sizeof(b), TR("%.0f VA"), d.ac_va);
     else strcpy(b, "--");
     set_label(t.big, b);
 
     const char *alarm = ok(i) ? vic_alarm_text(d.alarm) : NULL;
     if (!ok(i)) set_label(t.l1, vic_status(d, cfg[i].type, now));
     else if (alarm) {
-      snprintf(b, sizeof(b), LV_SYMBOL_WARNING " %s", alarm);
+      snprintf(b, sizeof(b), LV_SYMBOL_WARNING " %s", TR(alarm));
       set_label(t.l1, b);
     } else set_label(t.l1, d.state == 1 ? "ECO (search)" : vic_state_name(d.state));
     /* red tile on alarm or fault */
@@ -464,12 +478,32 @@ void power_timer_cb(lv_timer_t *timer) {
     else strcpy(b, "--");
     set_label(t.big, b);
     const char *note = isnan(loads)                ? ""
-                       : dcdc_active && inv_active ? "Calc. excl. DC-DC, incl. inv."
-                       : dcdc_active               ? "Calculated, excl. DC-DC"
-                       : inv_active                ? "Calculated, incl. inverter"
-                                                   : "Calculated";
+                       : dcdc_active && inv_active ? N_("Calc. excl. DC-DC, incl. inv.")
+                       : dcdc_active               ? N_("Calculated, excl. DC-DC")
+                       : inv_active                ? N_("Calculated, incl. inverter")
+                                                   : N_("Calculated");
     set_label(t.l2, note);
     set_flow_dir(flows[4], !isnan(loads) && loads > 2);
+  }
+
+  /* ---- the small graphs: the last ten minutes ---- */
+  const HistSample *rec = history_recent();
+  if (rec) {
+    static float buf[HIST_RECENT];
+    auto spark = [&](int tile, float HistSample::*field, bool show) {
+      Tile &t = tiles[tile];
+      if (!t.spark) return;
+      if (!show) {
+        lv_obj_add_flag(t.spark, LV_OBJ_FLAG_HIDDEN);
+        return;
+      }
+      for (int i = 0; i < HIST_RECENT; i++) buf[i] = rec[i].*field;
+      set_sparkline(t.spark, buf, HIST_RECENT, 10);
+      lv_obj_clear_flag(t.spark, LV_OBJ_FLAG_HIDDEN);
+    };
+    spark(T_SOLAR, &HistSample::pv_w, has[T_SOLAR]);
+    spark(T_LOADS, &HistSample::load_w, has[T_LOADS]);
+    spark(T_BATT, &HistSample::soc, has[T_BATT] && bm >= 0);
   }
 
   victron_settings_refresh(cfg, dat, seen, now);

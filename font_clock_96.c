@@ -1,5 +1,6 @@
+// esp32-S3-ws4-boat v1.0
 /* font_clock_96: DejaVu Sans 96 px, 4 bpp, characters '-' '0'-'9' ':'
- * Generated for the esp32-S3-ws4-caravan screen saver clock (LVGL 8 font format). */
+ * Generated for the esp32-S3-ws4-boat screen saver clock (LVGL 8 font format). */
 #include <lvgl.h>
 
 static LV_ATTRIBUTE_LARGE_CONST const uint8_t glyph_bitmap[] = {

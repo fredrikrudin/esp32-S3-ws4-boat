@@ -1,3 +1,4 @@
+// esp32-S3-ws4-boat v1.0
 // n2k_config.h - NMEA 2000 configuration for esp32-S3-ws4-boat
 // Everything you normally want to change for your own boat is in this file.
 #pragma once
@@ -23,6 +24,7 @@
 #define N2K_RX_QUEUE_LEN      64
 
 // 0 = quiet, 1 = print parsed values, 2 = also print every PGN/source received
+// (to USB serial, and only with Settings -> Device -> Debug -> Serial monitor on)
 #define N2K_DEBUG_SERIAL      0
 
 // A value older than this is shown as "--"
@@ -45,7 +47,7 @@
 // changed from the Engine tab dropdown or via the web API.
 // ---------------------------------------------------------------------------
 #define ENG_DEFAULT_INSTANCE  0
-#define ENG_DEFAULT_NAME      "Motor"
+#define ENG_DEFAULT_NAME      "Engine"   // shown translated: "Motor" in Swedish
 #define ENG_DEFAULT_SOURCE    255     // 255 = accept any source address
 
 // Twin engines (start page shows both RPM dials): N2K instances and default names.
@@ -96,9 +98,9 @@
 // Tanks listed here always show (as "--" until data arrives). Tanks seen on the
 // bus that are NOT listed are added automatically with a default name.
 // Names can be overridden at runtime via the web API (stored in NVS).
-//
-// NOTE: LVGL's built-in Montserrat fonts have no å/ä/ö. Keep names ASCII unless
-// you add a custom font with Latin-1 glyphs.
+// The names below are shown translated (lang/*.po) when a language is chosen;
+// names set via the web API are shown as typed. Å, Ä, Ö and other Latin-1 letters
+// work (font_latin1.c), but only while the display language is not English.
 // ---------------------------------------------------------------------------
 struct N2kTankDef { uint8_t fluidType; uint8_t instance; const char *name; };
 
