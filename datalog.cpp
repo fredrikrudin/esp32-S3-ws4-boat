@@ -178,7 +178,7 @@ bool settings_backup() {
   doc["scanint"] = scan_interval_s;
   doc["bl"] = bl_normal;
   doc["blsaver"] = bl_saver;
-  doc["feat"] = (feat_ruuvi ? 0x01 : 0) | (feat_sdlog ? 0x20 : 0) | (feat_csv ? 0x40 : 0) | (feat_powersave ? 0 : 0x80);
+  doc["feat"] = (feat_ruuvi ? 0x01 : 0) | (feat_sdlog ? 0x20 : 0) | (feat_csv ? 0x40 : 0);
   doc["noweb"] = feat_web ? 0 : 1;
   doc["csvmin"] = csv_interval_min;
   doc["battmode"] = feat_battmode ? 1 : 0;

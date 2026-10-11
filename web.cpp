@@ -1,29 +1,40 @@
 // esp32-S3-ws4-boat v1.0
-/* Minimal web server (port 80), read-only.
- *   /        HTML page: boat data (NMEA 2000), battery SOC, Victron devices, temperatures, weather.
- *            Refreshes itself every 5 seconds.
- *   /json    The same data as JSON, for scripts or Home Assistant (?key=<password> if a password is set).
+/* Web server (port 80).
+ *   /        The page: a fixed HTML file (web_page.h) that loads /json every 5 s and
+ *            draws itself in the browser, adapting to phone, tablet or PC: boat data
+ *            (NMEA 2000), battery, solar, temperatures, weather, Victron devices.
+ *   /lang    The page's texts in the display's language (see handle_lang)
+ *   /json    All the data as JSON: for the page, scripts or Home Assistant
+ *            (?key=<password> if a password is set).
  *   /api/n2k      all NMEA 2000 data: devices -> PGNs -> values with limits, tanks, engine settings
  *   /api/n2k/set  POST key=...&value=...: engine, tank names, gauge ranges and limits (N2K_INTEGRATION.md)
  *   /login   Password-only login, when a password is set under Settings -> Web page.
  *   /logout
  *   /log     the most recent log lines as plain text (same log as the Serial Monitor)
  *   /files   list of files on the TF card; /files?name=... downloads one
- * Reachable at http://boat.local/ (mDNS) or the board's IP address.
- * Starts as soon as WiFi is connected. Runs from loop(), so it never races the UI.
+ * Reachable at http://<page name>.local/ (mDNS; boat.local until renamed) or the board's IP address.
+ * Starts as soon as WiFi is connected. Runs from loop(), so it never races the UI,
+ * and never makes it wait: the server is web_http.cpp, which handles several
+ * connections at once and only ever sends what the network takes at once.
  *
  * Note: plain HTTP, so the password travels unencrypted on the local network.
  * It keeps casual visitors on the same WiFi out; it is not strong security. */
 #include "app.h"
 #include <WiFi.h>
-#include <WebServer.h>
 #include <ESPmDNS.h>
+#include "web_http.h"
+#include "web_page.h"
+
+#ifndef WEB_PORT
+#define WEB_PORT 80  // tools/webpreview uses 8080
+#endif
 #include "n2k_bus.h"
 #include "n2k_data.h"
 #include "n2k_settings.h"
 #include "n2k_limits.h"
+#include "ui_n2k_common.h"  // uiTankName
 
-static WebServer server(80);
+static MiniHttp server;
 static bool started = false;
 
 /* ---------- text helpers (used everywhere below) ---------- */
@@ -75,6 +86,36 @@ void web_password_changed() {
   new_token();  // everyone logged in has to log in again
 }
 
+/* The page's name, made into a host name for http://<name>.local/:
+   lower case, a-z 0-9 and '-', with å ä ö (and Å Ä Ö) as a a o */
+void web_host_name(char *out, size_t n) {
+  char name[24];
+  LOCK();
+  strlcpy(name, g.web_name, sizeof(name));
+  UNLOCK();
+  size_t o = 0;
+  for (const unsigned char *p = (const unsigned char *)name; *p && o + 1 < n; p++) {
+    char c = 0;
+    if (*p >= 'a' && *p <= 'z') c = *p;
+    else if (*p >= 'A' && *p <= 'Z') c = *p - 'A' + 'a';
+    else if (*p >= '0' && *p <= '9') c = *p;
+    else if (*p == 0xC3 && p[1]) {  // UTF-8 for a-ring, a/o-umlaut and their capitals
+      unsigned char d = *++p;
+      c = (d == 0xA5 || d == 0xA4 || d == 0x85 || d == 0x84) ? 'a' : (d == 0xB6 || d == 0x96) ? 'o' : '-';
+    } else c = '-';
+    if (c == '-' && (o == 0 || out[o - 1] == '-')) continue;  // no leading or double dashes
+    out[o++] = c;
+  }
+  while (o && out[o - 1] == '-') o--;
+  out[o] = 0;
+  if (!o) strlcpy(out, MDNS_NAME, n);
+}
+
+static volatile bool host_changed = false;
+void web_name_changed() {
+  host_changed = true;  // web_service() announces the new name
+}
+
 static void get_page_name(char *out, size_t n) {
   LOCK();
   strlcpy(out, g.web_name, n);
@@ -101,7 +142,7 @@ static const char PAGE_HEAD[] PROGMEM =
   "<!DOCTYPE html><html><head><meta charset='utf-8'>"
   "<meta name='viewport' content='width=device-width,initial-scale=1'>"
   "<style>"
-  "body{font-family:sans-serif;background:#15171a;color:#e0e0e0;margin:0;padding:16px;max-width:520px}"
+  "body{font-family:system-ui,sans-serif;background:#111418;color:#e6e8eb;margin:0 auto;padding:16px;max-width:760px}"
   "h1{font-size:20px;margin:0 0 12px}h2{font-size:15px;color:#2196f3;margin:20px 0 6px}"
   ".soc{font-size:56px;font-weight:bold}.sub{color:#9e9e9e;font-size:13px}"
   ".row{display:flex;justify-content:space-between;padding:8px 10px;background:#282b30;border-radius:6px;margin:4px 0}"
@@ -140,10 +181,9 @@ static void send_login(const char *msg) {
   char name[24];
   get_page_name(name, sizeof(name));
   s += FPSTR(PAGE_HEAD);
-  add(s, "<title>%s</title></head><body><h1>%s</h1>", esc_html(name).c_str(), esc_html(name).c_str());
-  s += F("<form method='post' action='/login'>"
-         "<input type='password' name='p' placeholder='Password' autofocus>"
-         "<button>Log in</button></form>");
+  add(s, "<title>%s</title></head><body><h1>%s</h1>", esc_html(name).c_str(), esc_html(name).c_str());  // lang: set in PAGE_HEAD
+  add(s, "<form method='post' action='/login'><input type='password' name='p' placeholder='%s' autofocus>"
+         "<button>%s</button></form>", TR("Password"), TR("Log in"));
   if (msg && msg[0]) {
     s += F("<p class='err'>");
     s += msg;
@@ -159,12 +199,12 @@ static void redirect(const char *to) {
 }
 
 static void handle_login() {
-  if (server.method() != HTTP_POST) {
+  if (server.method() != MH_POST) {
     send_login("");
     return;
   }
   if (last_fail && millis() - last_fail < 2000) {
-    send_login("Too many attempts - wait a moment");
+    send_login(TR("Too many attempts - wait a moment"));
     return;
   }
   char pass[33];
@@ -174,7 +214,7 @@ static void handle_login() {
     redirect("/");
   } else {
     last_fail = millis() | 1;
-    send_login("Wrong password");
+    send_login(TR("Wrong password"));
   }
 }
 
@@ -250,75 +290,25 @@ static int battery_monitor(uint32_t now) {
   return -1;
 }
 
-
-
-/* ---------- NMEA 2000 on the page and in /json ---------- */
-static const char *level_class(uint8_t q, uint8_t inst, uint8_t sub, double v, bool checkLow = true) {
-  N2kLevel l = n2kLimitsEval(n2kLimitsGet(q, inst, sub), v, checkLow);
-  return l == N2K_LVL_ALARM ? " style='color:#f44336'" : l == N2K_LVL_WARN ? " style='color:#ff9800'" : "";
-}
-
-static void html_val(String &s, const char *title, bool ok, double v, int dec, const char *unit, const char *cls = "") {
-  if (ok) add(s, "<div><span class='sub'>%s</span><br><b%s>%.*f</b> <span class='sub'>%s</span></div>", title, cls, dec, v, unit);
-  else add(s, "<div><span class='sub'>%s</span><br>--</div>", title);
-}
-
-static void html_boat(String &s) {
-  double v, off;
-  s += F("<h2>Boat</h2><div class='strip'>");
-  bool hd = n2kGet(Q_DEPTH, 0, 0, v);
-  if (hd && n2kGet(Q_DEPTH_OFFSET, 0, 0, off, 30000)) v += off;
-  html_val(s, "Depth", hd, v, 1, "m", hd ? level_class(Q_DEPTH, 0, 0, v) : "");
-  bool h = n2kGet(Q_STW, 0, 0, v);
-  html_val(s, "Log", h, v, 1, "kn");
-  h = n2kGet(Q_SOG, 0, 0, v);
-  html_val(s, "SOG", h, v, 1, "kn");
-  h = n2kGetAny(Q_SEA_TEMP, v);
-  html_val(s, "Sea", h, v, 1, "&deg;C");
-  s += F("</div>");
-
-  const uint8_t e = n2kSettings.engInstance;
-  double rpm;
-  bool hr = n2kGet(Q_ENG_RPM, e, 0, rpm);
-  bool running = hr && rpm > ENG_RUNNING_RPM;
-  add(s, "<h2>Engine: %s</h2><div class='strip'>", esc_html(n2kSettings.engName).c_str());
-  html_val(s, "RPM", hr, rpm, 0, "", hr ? level_class(Q_ENG_RPM, e, 0, rpm) : "");
-  h = n2kGet(Q_ENG_COOL_T, e, 0, v);
-  html_val(s, "Coolant", h, v, 0, "&deg;C", h ? level_class(Q_ENG_COOL_T, e, 0, v) : "");
-  h = n2kGet(Q_ENG_OIL_P, e, 0, v);
-  html_val(s, "Oil", h, v, 1, "bar", h ? level_class(Q_ENG_OIL_P, e, 0, v, running) : "");
-  h = n2kGet(Q_ENG_ALT_V, e, 0, v);
-  html_val(s, "Alt", h, v, 1, "V", h ? level_class(Q_ENG_ALT_V, e, 0, v, running) : "");
-  s += F("</div>");
-
-  if (n2kTankCount()) {
-    s += F("<h2>Tanks</h2>");
-    for (int i = 0; i < n2kTankCount(); i++) {
-      N2kTank *t = n2kTankAt(i);
-      double lv, cap;
-      bool hl = n2kGet(Q_TANK_LEVEL, t->instance, t->fluidType, lv);
-      add(s, "<div class='row'><span>%s</span><span%s>", esc_html(t->name).c_str(),
-          hl ? level_class(Q_TANK_LEVEL, t->instance, t->fluidType, lv) : "");
-      if (!hl) s += F("--");
-      else if (n2kGet(Q_TANK_CAP, t->instance, t->fluidType, cap, 60000) && cap > 0)
-        add(s, "<b>%.0f%%</b> <span class='sub'>%.0f/%.0f L</span>", lv, lv * cap / 100, cap);
-      else add(s, "<b>%.0f%%</b>", lv);
-      s += F("</span></div>");
-    }
-  }
-  s += F("<div class='sub'><a href='/api/n2k'>All NMEA 2000 data (JSON)</a></div>");
-}
-
+/* ---------- NMEA 2000 in /json ---------- */
 static void json_num(String &s, const char *key, bool ok, double v, int dec) {
   num_json(s, key, ok ? (float)v : NAN, dec);
 }
 
-/* Short boat summary for /json; everything else is at /api/n2k */
+/* 0 fine, 1 warning, 2 alarm: the page colours the value */
+static int level_of(uint8_t q, uint8_t inst, uint8_t sub, double v, bool checkLow = true) {
+  N2kLevel l = n2kLimitsEval(n2kLimitsGet(q, inst, sub), v, checkLow);
+  return l == N2K_LVL_ALARM ? 2 : l == N2K_LVL_WARN ? 1 : 0;
+}
+
+/* A short boat summary; everything else is at /api/n2k */
 static void json_boat(String &s) {
   double v, off;
+  int l_depth = 0, l_rpm = 0, l_cool = 0, l_oil = 0, l_alt = 0;
   s += "\"boat\":{";
   bool hd = n2kGet(Q_DEPTH, 0, 0, v);
   if (hd && n2kGet(Q_DEPTH_OFFSET, 0, 0, off, 30000)) v += off;
+  if (hd) l_depth = level_of(Q_DEPTH, 0, 0, v);
   json_num(s, "depth", hd, v, 2);
   s += ',';
   bool h = n2kGet(Q_STW, 0, 0, v);
@@ -326,6 +316,9 @@ static void json_boat(String &s) {
   s += ',';
   h = n2kGet(Q_SOG, 0, 0, v);
   json_num(s, "sog", h, v, 2);
+  s += ',';
+  h = n2kGet(Q_COG, 0, 0, v);
+  json_num(s, "cog", h, v, 0);
   s += ',';
   h = n2kGetAny(Q_SEA_TEMP, v);
   json_num(s, "sea_temp", h, v, 1);
@@ -336,147 +329,205 @@ static void json_boat(String &s) {
   s += ',';
   json_num(s, "lon", hp, lon, 6);
   const uint8_t e = n2kSettings.engInstance;
-  add(s, ",\"engine\":{\"name\":\"%s\",\"instance\":%u,", esc_json(n2kSettings.engName).c_str(), e);
-  h = n2kGet(Q_ENG_RPM, e, 0, v);
-  json_num(s, "rpm", h, v, 0);
+  double rpm = 0;
+  bool hr = n2kGet(Q_ENG_RPM, e, 0, rpm);
+  bool running = hr && rpm > ENG_RUNNING_RPM;
+  add(s, ",\"engine\":{\"name\":\"%s\",\"instance\":%u,", esc_json(tr(n2kSettings.engName)).c_str(), e);
+  if (hr) l_rpm = level_of(Q_ENG_RPM, e, 0, rpm);
+  json_num(s, "rpm", hr, rpm, 0);
   s += ',';
   h = n2kGet(Q_ENG_COOL_T, e, 0, v);
+  if (h) l_cool = level_of(Q_ENG_COOL_T, e, 0, v);
   json_num(s, "coolant", h, v, 1);
   s += ',';
   h = n2kGet(Q_ENG_OIL_P, e, 0, v);
+  if (h) l_oil = level_of(Q_ENG_OIL_P, e, 0, v, running);
   json_num(s, "oil_pressure", h, v, 2);
   s += ',';
   h = n2kGet(Q_ENG_ALT_V, e, 0, v);
+  if (h) l_alt = level_of(Q_ENG_ALT_V, e, 0, v, running);
   json_num(s, "alternator", h, v, 2);
   s += "},\"tanks\":[";
   for (int i = 0; i < n2kTankCount(); i++) {
     N2kTank *t = n2kTankAt(i);
     if (i) s += ',';
-    add(s, "{\"name\":\"%s\",\"type\":%u,\"instance\":%u,", esc_json(t->name).c_str(), t->fluidType, t->instance);
+    char tn[40];
+    uiTankName(t, tn, sizeof(tn));  // default names in the display's language, as on screen
+    add(s, "{\"name\":\"%s\",\"type\":%u,\"instance\":%u,", esc_json(tn).c_str(), t->fluidType, t->instance);
     h = n2kGet(Q_TANK_LEVEL, t->instance, t->fluidType, v);
     json_num(s, "level", h, v, 0);
-    s += '}';
+    add(s, ",\"state\":%d}", h ? level_of(Q_TANK_LEVEL, t->instance, t->fluidType, v) : 0);
   }
-  s += "]}";
+  add(s, "],\"levels\":{\"depth\":%d,\"rpm\":%d,\"coolant\":%d,\"oil_pressure\":%d,\"alternator\":%d},\"bus_ok\":%s}",
+      l_depth, l_rpm, l_cool, l_oil, l_alt, n2kBusOk() ? "true" : "false");
 }
 
-/* Sends what has been built so far and empties the buffer, so the whole page is
-   never held in memory at once. Saves about 10 kB of internal RAM at the moment
-   the page is served, which is when free memory was at its lowest. */
-static void chunk(String &s, bool force = false) {
-  if (!force && s.length() < 1400) return;
-  if (s.length()) server.sendContent(s);
-  s = "";
+/* ---------- the page ---------- */
+/* The page's texts in the display's language, as {"English": "translation", ...}.
+   They are the T("...") calls in web_page.h: found there at run time, so the list
+   can't go stale, and tools/i18n.py puts the same texts in lang/<code>.po.
+   In English (or for a text not translated yet) the page keeps its own text. */
+static void handle_lang() {
+  String s;
+  s.reserve(4096);  // PSRAM
+  s += '{';
+  if (ui_translated) {
+    char en[96];
+    for (const char *p = WEB_PAGE; (p = strstr(p, "T(\"")) != nullptr;) {
+      bool call = p == WEB_PAGE || !(isalnum((unsigned char)p[-1]) || p[-1] == '_');
+      p += 3;
+      const char *e = strchr(p, '"');
+      if (!e) break;
+      size_t n = e - p;
+      if (!call || n == 0 || n >= sizeof(en)) continue;
+      memcpy(en, p, n);
+      en[n] = 0;
+      const char *t = tr(en);
+      if (t == en || !strcmp(t, en)) continue;  // not translated
+      String key = "\"" + esc_json(en) + "\":";
+      if (s.indexOf(key) >= 0) continue;  // used more than once in the page
+      if (s.length() > 1) s += ',';
+      s += key;
+      s += '"';
+      s += esc_json(t);
+      s += '"';
+    }
+  }
+  s += '}';
+  server.send(200, "application/json; charset=utf-8", s);
 }
 
-/* ---------- charts, drawn as inline SVG (no JavaScript needed) ---------- */
-
-/* Bars of solar and consumption per hour, with the battery as a line on top */
-static void svg_history(String &s) {
-  HistBucket *hours, *days;
-  history_get(&hours, &days);
-  if (!hours) return;
-
-  float max = 1;
-  for (int i = 0; i < HIST_HOURS; i++) {
-    if (hours[i].solar_wh > max) max = hours[i].solar_wh;
-    if (hours[i].load_wh > max) max = hours[i].load_wh;
-  }
-  const int W = 480, H = 150, base = H - 18, bw = 8;
-
-  add(s, "<svg viewBox='0 0 %d %d' class='chart'>", W, H);
-  add(s, "<line x1='0' y1='%d' x2='%d' y2='%d' stroke='#2a2f36'/>", base, W, base);
-  for (int i = 0; i < HIST_HOURS; i++) {
-    int x = 10 + i * 19;
-    int sh = (int)(hours[i].solar_wh / max * (base - 10));
-    int lh = (int)(hours[i].load_wh / max * (base - 10));
-    if (sh > 0) add(s, "<rect x='%d' y='%d' width='%d' height='%d' fill='#f39c12'/>", x, base - sh, bw, sh);
-    if (lh > 0) add(s, "<rect x='%d' y='%d' width='%d' height='%d' fill='#e74c3c'/>", x + bw + 1, base - lh, bw, lh);
-  }
-  /* battery line, 0-100 % across the same area */
-  String pts;
-  for (int i = 0; i < HIST_HOURS; i++) {
-    if (isnan(hours[i].soc)) continue;
-    char p[16];
-    snprintf(p, sizeof(p), "%d,%d ", 10 + i * 19 + bw, (int)(base - hours[i].soc / 100.0f * (base - 10)));
-    pts += p;
-  }
-  if (pts.length()) add(s, "<polyline points='%s' fill='none' stroke='#3498db' stroke-width='2'/>", pts.c_str());
-  add(s, "<text x='4' y='%d' fill='#8a9099' font-size='10'>-23h</text>"
-         "<text x='%d' y='%d' fill='#8a9099' font-size='10' text-anchor='end'>now</text></svg>",
-      H - 4, W - 4, H - 4);
-  add(s, "<div class='sub'>Max %.0f Wh per hour &middot; <span style='color:#f39c12'>solar</span> &middot; "
-         "<span style='color:#e74c3c'>consumption</span> &middot; <span style='color:#3498db'>battery %%</span></div>", max);
-}
-
-/* The last ten minutes as a line, from the sparkline ring */
-static void svg_spark(String &s, float HistSample::*field, const char *color, const char *label, const char *unit) {
-  const HistSample *r = history_recent();
-  if (!r) return;
-  float mn = 1e9f, mx = -1e9f;
-  for (int i = 0; i < HIST_RECENT; i++) {
-    float v = r[i].*field;
-    if (isnan(v)) continue;
-    if (v < mn) mn = v;
-    if (v > mx) mx = v;
-  }
-  if (mn > mx) return;
-  if (mx - mn < 1) mx = mn + 1;
-
-  const int W = 230, H = 60;
-  String pts;
-  for (int i = 0; i < HIST_RECENT; i++) {
-    float v = r[i].*field;
-    if (isnan(v)) continue;
-    char p[16];
-    snprintf(p, sizeof(p), "%d,%d ", (int)(i * (W - 8) / (HIST_RECENT - 1)) + 4,
-             (int)(H - 14 - (v - mn) / (mx - mn) * (H - 22)));
-    pts += p;
-  }
-  add(s, "<div class='spark'><svg viewBox='0 0 %d %d'>"
-         "<polyline points='%s' fill='none' stroke='%s' stroke-width='2'/></svg>"
-         "<div class='sub'>%s, last 10 min (%.0f-%.0f %s)</div></div>",
-      W, H, pts.c_str(), color, label, mn, mx, unit);
-}
-
-/* ---------- HTML page ---------- */
+/* One fixed file: the browser keeps it (ETag) and only fetches /json after that */
 static void handle_root() {
   if (!authorized()) {
     redirect("/login");
     return;
   }
+  static const char etag[] = "\"" FW_VERSION "-" __DATE__ "-" __TIME__ "\"";
+  if (server.header("If-None-Match") == etag) {
+    server.send(304, "text/plain", "");
+    return;
+  }
+  server.sendHeader("ETag", etag);
+  server.sendHeader("Cache-Control", "no-cache");  // the browser checks the ETag each time
+  server.send_P(200, "text/html; charset=utf-8", WEB_PAGE, strlen_P(WEB_PAGE));
+}
+
+/* ---------- JSON ---------- */
+/* n values, stride floats apart (fields of a struct array), NAN as null */
+static void json_series(String &s, const char *key, const float *v, int n, int stride, int decimals) {
+  add(s, "\"%s\":[", key);
+  for (int i = 0; i < n; i++) {
+    float x = v[i * stride];
+    if (i) s += ',';
+    if (isnan(x)) s += "null";
+    else add(s, "%.*f", decimals, x);
+  }
+  s += ']';
+}
+
+/* The history behind the page's charts: 24 hours of solar and consumption (Wh)
+   with the battery %, and the last 10 minutes */
+static void json_history(String &s) {
+  HistBucket *hours, *days;
+  history_get(&hours, &days);
+  const HistSample *rec = history_recent();
+  const int hs = sizeof(HistBucket) / sizeof(float), rs = sizeof(HistSample) / sizeof(float);
+  s += "\"history\":{";
+  if (hours) {
+    s += "\"hours\":{";
+    json_series(s, "solar", &hours[0].solar_wh, HIST_HOURS, hs, 0);
+    s += ',';
+    json_series(s, "load", &hours[0].load_wh, HIST_HOURS, hs, 0);
+    s += ',';
+    json_series(s, "soc", &hours[0].soc, HIST_HOURS, hs, 0);
+    s += '}';
+  }
+  if (rec) {
+    s += hours ? ",\"recent\":{" : "\"recent\":{";
+    json_series(s, "solar", &rec[0].pv_w, HIST_RECENT, rs, 0);
+    s += ',';
+    json_series(s, "load", &rec[0].load_w, HIST_RECENT, rs, 0);
+    s += ',';
+    json_series(s, "soc", &rec[0].soc, HIST_RECENT, rs, 1);
+    s += '}';
+  }
+  s += '}';
+}
+
+static void json_weather(String &s) {
+  s += "\"weather\":{";
+  if (wx.valid) {
+    num_json(s, "temperature", wx.temp, 1);
+    s += ',';
+    num_json(s, "feels_like", wx.feels, 1);
+    s += ',';
+    add(s, "\"humidity\":%d,", wx.humidity);
+    num_json(s, "wind", wx.wind, 1);
+    add(s, ",\"condition\":\"%s\",", tr(wmo_text(wx.code)));
+    num_json(s, "today_max", wx.today_max, 0);
+    s += ',';
+    num_json(s, "today_min", wx.today_min, 0);
+    s += ",\"forecast\":[";
+    for (int i = 0; i < 3; i++) {
+      if (i) s += ',';
+      add(s, "{\"day\":\"%s\",\"condition\":\"%s\",", tr(wx.fc_day[i]), tr(wmo_text(wx.fc_code[i])));
+      num_json(s, "max", wx.fc_max[i], 0);
+      s += ',';
+      num_json(s, "min", wx.fc_min[i], 0);
+      s += '}';
+    }
+    s += ']';
+  }
+  s += '}';
+}
+
+/* Everything the page shows, built in one piece (a few kB, in PSRAM) and sent
+   with its length: no half-sent replies holding the board up */
+static void handle_json() {
+  uint32_t t0 = millis();
+  if (!authorized()) {
+    server.send(401, "application/json", "{\"error\":\"login required\"}");
+    return;
+  }
   take_snapshot();
   uint32_t now = millis();
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);  // sent in pieces as it is built
-  server.send(200, "text/html; charset=utf-8", "");
 
   String s;
-  s.reserve(1600);  // one chunk at a time, not the whole page
+  s.reserve(8192);  // over 4 kB: comes from PSRAM, not the scarce internal RAM
 
-  char page_name[24];
-  get_page_name(page_name, sizeof(page_name));
-  s += FPSTR(PAGE_HEAD);
-  add(s, "<meta http-equiv='refresh' content='5'><title>%s</title></head><body><h1>%s</h1>",
-      esc_html(page_name).c_str(), esc_html(page_name).c_str());
+  /* ---- page header: name, clock, version ---- */
+  char name[24], tb[16], db[64], pass[33];
+  get_page_name(name, sizeof(name));
+  format_local_time(tb, db);  // in the display's language, like the rest of the page
+  get_password(pass);
+  add(s, "{\"name\":\"%s\",\"project\":\"esp32-S3-ws4-boat\",\"version\":\"" FW_VERSION "\",\"time\":\"%s\",\"date\":\"%s\",",
+      esc_json(name).c_str(), tb, esc_json(db).c_str());
+  add(s, "\"lang\":\"%s\",", ui_lang);  // the page loads its texts from /lang when this changes
+  add(s, "\"uptime_min\":%lu,\"logout\":%s,\"has_location\":%s,", (unsigned long)(now / 60000),
+      pass[0] ? "true" : "false", wx_has_loc ? "true" : "false");
 
-  /* ================= warnings and alarms ================= */
-  Alarm al[MAX_ALARMS];
-  int aln = alarms_get(al, MAX_ALARMS);
-  for (int i = 0; i < aln; i++)
-    add(s, "<div class='alarm lvl%d'>&#9888; %s</div>", al[i].level, esc_html(al[i].text).c_str());
-
-  chunk(s);
-  /* ================= start page: clock with gauges ================= */
+  /* ---- battery: the Victron battery monitor ---- */
   int bm = battery_monitor(now);
-  float soc = NAN, batt_v = NAN, batt_w = NAN;
-  int ttg = -1;
-  if (bm >= 0 && !isnan(dat[bm].soc)) {
-    soc = dat[bm].soc;
-    batt_v = dat[bm].batt_v;
-    if (!isnan(dat[bm].batt_v) && !isnan(dat[bm].batt_i)) batt_w = dat[bm].batt_v * dat[bm].batt_i;
-    ttg = dat[bm].remaining_min;
+  s += "\"battery\":{";
+  if (bm >= 0) {
+    const VicData &d = dat[bm];
+    float p = (isnan(d.batt_v) || isnan(d.batt_i)) ? NAN : d.batt_v * d.batt_i;
+    num_json(s, "soc", d.soc, 1);
+    s += ',';
+    num_json(s, "voltage", d.batt_v, 2);
+    s += ',';
+    num_json(s, "current", d.batt_i, 2);
+    s += ',';
+    num_json(s, "power", p, 0);
+    add(s, ",\"ttg_min\":%d,\"charging\":%s,\"source\":\"victron\"", d.remaining_min,
+        (!isnan(p) && p > 5) ? "true" : "false");
+  } else {
+    s += "\"soc\":null";
   }
+  s += "},";
 
+  /* ---- solar ---- */
   float pv_sum = 0, yield_sum = 0;
   bool pv_any = false;
   for (int i = 0; i < MAX_VIC; i++) {
@@ -487,167 +538,11 @@ static void handle_root() {
     }
     if (!isnan(dat[i].yield_kwh)) yield_sum += dat[i].yield_kwh;
   }
-  static float pv_scale = 400;
-  if (pv_sum > pv_scale) pv_scale = pv_sum;
+  if (pv_any) add(s, "\"solar\":{\"power\":%.0f,\"yield_kwh\":%.2f},", pv_sum, yield_sum);
+  else s += "\"solar\":null,";
 
-  char clock_txt[16], date_txt[64];
-  format_local_time(clock_txt, date_txt);
-
-  s += F("<div class='hero'>");
-  add(s, "<div class='g %s'><i style='height:%.0f%%'></i></div>", (!isnan(soc) && soc < 20) ? "gl" : "gb", isnan(soc) ? 0.0f : soc);
-  s += F("<div class='mid'>");
-  if (!isnan(batt_w) && batt_w > 5) s += F("<div style='color:#2ecc71;font-size:14px'>&#9889; Charging</div>");
-  else s += F("<div style='font-size:14px'>&nbsp;</div>");
-  add(s, "<div class='clock'>%s</div><div class='sub'>%s</div>", clock_txt, date_txt);
-  s += F("</div>");
-  add(s, "<div class='g gs'><i style='height:%.0f%%'></i></div>", pv_any ? pv_sum / pv_scale * 100 : 0.0f);
-  s += F("</div><div class='vals'><div>");
-
-  if (isnan(soc)) s += F("<b>--</b><br><span class='sub'>No battery data</span>");
-  else {
-    add(s, "<b class='big'>%.0f%%</b>", soc);
-    if (!isnan(batt_v)) {
-      if (!isnan(batt_w)) add(s, "<br><span class='sub'>%.2f V &middot; %+.0f W</span>", batt_v, batt_w);
-      else add(s, "<br><span class='sub'>%.2f V</span>", batt_v);
-    }
-    if (ttg >= 0 && !isnan(batt_w) && batt_w < 0) add(s, "<br><span class='sub'>%dh %02dm left</span>", ttg / 60, ttg % 60);
-  }
-  s += F("</div><div style='text-align:right'>");
-  if (!pv_any) s += F("<b>--</b><br><span class='sub'>No solar data</span>");
-  else add(s, "<b class='big'>%.0f W</b><br><span class='sub'>Solar &middot; today %.2f kWh</span>", pv_sum, yield_sum);
-  s += F("</div></div>");
-
-  /* temperatures in one strip */
-  s += F("<div class='strip'>");
-  for (int i = 0; i < MAX_RUUVI; i++) {
-    float t = ruuvi_temp(i, now);
-    if (!ruuvi_cfg[i].used) continue;
-    if (isnan(t)) add(s, "<div><span class='sub'>%s</span><br>--</div>", esc_html(ruuvi_cfg[i].name).c_str());
-    else add(s, "<div><span class='sub'>%s</span><br><b>%.1f&deg;C</b></div>", esc_html(ruuvi_cfg[i].name).c_str(), t);
-  }
-  if (wx.valid) add(s, "<div><span class='sub'>Outside</span><br><b>%.1f&deg;C</b></div>", wx.temp);
-  s += F("</div>");
-
-  chunk(s);
-  /* ================= boat: NMEA 2000 ================= */
-  html_boat(s);
-
-  chunk(s);
-  /* ================= graphs ================= */
-  s += F("<h2>Last 24 hours</h2>");
-  svg_history(s);
-  chunk(s);
-  s += F("<div class='sparks'>");
-  svg_spark(s, &HistSample::pv_w, "#f39c12", "Solar", "W");
-  chunk(s);
-  svg_spark(s, &HistSample::soc, "#3498db", "Battery", "%");
-  svg_spark(s, &HistSample::load_w, "#e74c3c", "Consumption", "W");
-  s += F("</div>");
-
-  chunk(s);
-  /* ================= weather ================= */
-  s += F("<h2>Weather</h2>");
-  if (!wx.valid) {
-    s += wx_has_loc ? F("<div class='sub'>Loading weather...</div>") : F("<div class='sub'>No location set</div>");
-  } else {
-    add(s, "<div class='row'><span><b class='big'>%.1f&deg;C</b><br><span class='sub'>%s</span></span>"
-           "<span style='text-align:right'>H %.0f&deg; &middot; L %.0f&deg;<br><span class='sub'>Feels %.1f&deg; &middot; %d%% &middot; %.1f m/s</span></span></div>",
-        wx.temp, wmo_text(wx.code), wx.today_max, wx.today_min, wx.feels, wx.humidity, wx.wind);
-    s += F("<div class='fc'>");
-    for (int i = 0; i < 3; i++)
-      add(s, "<div><b>%s</b><br><span class='sub'>%s</span><br>%.0f&deg; / %.0f&deg;</div>",
-          wx.fc_day[i], wmo_text(wx.fc_code[i]), wx.fc_max[i], wx.fc_min[i]);
-    s += F("</div>");
-  }
-
-  chunk(s);
-  /* ================= Victron ================= */
-  s += F("<h2>Victron devices</h2>");
-  bool any = false;
-  for (int i = 0; i < MAX_VIC; i++) {
-    if (!cfg[i].used) continue;
-    any = true;
-    const char *st = vic_status(dat[i], cfg[i].type, now);
-    bool ok = vic_ok(i, now);
-    add(s, "<div class='row'><span>%s<br><span class='sub'>%s</span></span><span style='text-align:right'>",
-        esc_html(cfg[i].name).c_str(), vic_type_name(cfg[i].type));
-    if (!ok) {
-      add(s, "<span class='off'>%s</span>", st);
-    } else {
-      float p = vic_power(i);
-      if (!isnan(p)) add(s, "%.0f %s<br>", p, cfg[i].type == VIC_INVERTER ? "VA" : "W");
-      if (vic_charging(i, now)) s += F("<span class='chg'>&#9889; Charging</span>");
-      else if (cfg[i].type == VIC_INVERTER) {
-        const char *alarm = vic_alarm_text(dat[i].alarm);
-        add(s, "<span class='sub'>%s</span>", alarm ? alarm : vic_state_name(dat[i].state));
-      } else if (cfg[i].type != VIC_BATTMON) {
-        add(s, "<span class='sub'>%s</span>", vic_state_name(dat[i].state));
-      }
-    }
-    s += F("</span></div>");
-  }
-  if (!any) s += F("<div class='sub'>No Victron devices added</div>");
-
-  chunk(s);
-  /* ================= the board's own battery ================= */
-  {
-    float lipo_v;
-    int lipo_pct;
-    bool lipo_chg;
-    if (board_battery(&lipo_v, &lipo_pct, &lipo_chg)) {
-      s += F("<h2>Board battery</h2>");
-      add(s, "<div class='soc'>%d%%</div><div class='bar'><div style='width:%d%%'></div></div>", lipo_pct, lipo_pct);
-      add(s, "<div class='row'><span>%.2f V</span><span class='%s'>%s</span></div>", lipo_v,
-          lipo_chg ? "chg" : "sub",
-          lipo_chg ? "&#9889; Charging or full" : (power_on_battery() ? "Running on battery" : "On external power"));
-      if (power_on_battery())
-        add(s, "<div class='sub'>WiFi and Bluetooth are off; shutting down at %d%%</div>", batt_shutdown_pct);
-    }
-  }
-  chunk(s);
-
-  char pass[33];
-  get_password(pass);
-  add(s, "<p class='sub'>Updated every 5 s &middot; up %lu min &middot; <a href='/log'>log</a> &middot; <a href='/files'>files</a>%s</p>"
-         "<p class='sub'>v" FW_VERSION " &middot; built %s %s &middot; &copy; Fredrik Rudin<br>"
-         "<a href='https://github.com/fredrikrudin/esp32-S3-ws4-boat'>github.com/fredrikrudin/esp32-S3-ws4-boat</a><br>"
-         "Written with the help of Claude (Anthropic) &middot; <a href='https://creativecommons.org/licenses/by-nc/4.0/'>CC BY-NC 4.0</a></p></body></html>",
-      (unsigned long)(now / 60000), pass[0] ? " &middot; <a href='/logout'>Log out</a>" : "", __DATE__, __TIME__);
-  chunk(s, true);
-  server.sendContent("");  // end of the chunked reply
-}
-
-/* ---------- JSON ---------- */
-static void handle_json() {
-  if (!authorized()) {
-    server.send(401, "application/json", "{\"error\":\"login required\"}");
-    return;
-  }
-  take_snapshot();
-  uint32_t now = millis();
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server.send(200, "application/json", "");
-
-  String s;
-  s.reserve(1200);
-
-  int bm = battery_monitor(now);
-  s += "{\"battery\":{";
-  if (bm >= 0) {
-    const VicData &d = dat[bm];
-    num_json(s, "soc", d.soc, 1);
-    s += ',';
-    num_json(s, "voltage", d.batt_v, 2);
-    s += ',';
-    num_json(s, "current", d.batt_i, 2);
-    s += ',';
-    num_json(s, "power", (isnan(d.batt_v) || isnan(d.batt_i)) ? NAN : d.batt_v * d.batt_i, 0);
-    add(s, ",\"source\":\"victron\"");
-  } else {
-    s += "\"soc\":null";
-  }
-  s += "},\"victron\":[";
-
+  /* ---- Victron devices ---- */
+  s += "\"victron\":[";
   bool first = true;
   for (int i = 0; i < MAX_VIC; i++) {
     if (!cfg[i].used) continue;
@@ -655,14 +550,21 @@ static void handle_json() {
     first = false;
     bool ok = vic_ok(i, now);
     add(s, "{\"name\":\"%s\",\"type\":\"%s\",\"status\":\"%s\",", esc_json(cfg[i].name).c_str(),
-        vic_type_name(cfg[i].type), vic_status(dat[i], cfg[i].type, now));
+        tr(vic_type_name(cfg[i].type)), tr(vic_status(dat[i], cfg[i].type, now)));
     num_json(s, "power", ok ? vic_power(i) : NAN, 0);
     add(s, ",\"charging\":%s", vic_charging(i, now) ? "true" : "false");
-    if (ok && cfg[i].type != VIC_BATTMON) add(s, ",\"state\":\"%s\"", vic_state_name(dat[i].state));
+    if (ok && cfg[i].type == VIC_INVERTER) {
+      const char *a = vic_alarm_text(dat[i].alarm);
+      add(s, ",\"state\":\"%s\"", tr(a ? a : vic_state_name(dat[i].state)));
+    } else if (ok && cfg[i].type != VIC_BATTMON) {
+      add(s, ",\"state\":\"%s\"", tr(vic_state_name(dat[i].state)));
+    }
     s += '}';
   }
-  chunk(s);
-  s += "],\"alarms\":[";
+  s += "],";
+
+  /* ---- warnings and alarms ---- */
+  s += "\"alarms\":[";
   {
     Alarm al[MAX_ALARMS];
     int aln = alarms_get(al, MAX_ALARMS);
@@ -671,58 +573,45 @@ static void handle_json() {
       add(s, "{\"level\":%d,\"text\":\"%s\"}", al[i].level, esc_json(al[i].text).c_str());
     }
   }
-  s += "],\"temperatures\":[";
+  s += "],";
 
-  bool first_t = true;
+  /* ---- temperatures ---- */
+  s += "\"temperatures\":[";
+  first = true;
   for (int i = 0; i < MAX_RUUVI; i++) {
     if (!ruuvi_cfg[i].used) continue;
-    if (!first_t) s += ',';
-    first_t = false;
+    if (!first) s += ',';
+    first = false;
     add(s, "{\"name\":\"%s\",", esc_json(ruuvi_cfg[i].name).c_str());
     num_json(s, "temperature", ruuvi_temp(i, now), 1);
     s += '}';
   }
-  {  // the board's own battery
+  s += "],";
+
+  /* ---- the board's own battery ---- */
+  {
     float lv;
     int lp;
     bool lc;
     if (board_battery(&lv, &lp, &lc)) {
-      add(s, "],\"board_battery\":{\"percent\":%d,", lp);
+      add(s, "\"board_battery\":{\"percent\":%d,", lp);
       num_json(s, "voltage", lv, 2);
-      add(s, ",\"charging\":%s,\"on_battery\":%s}", lc ? "true" : "false", power_on_battery() ? "true" : "false");
+      add(s, ",\"charging\":%s,\"on_battery\":%s},", lc ? "true" : "false", power_on_battery() ? "true" : "false");
     } else {
-      s += "],\"board_battery\":null";
+      s += "\"board_battery\":null,";
     }
   }
-  chunk(s);
-  s += ",\"weather\":{";
-  if (wx.valid) {
-    num_json(s, "temperature", wx.temp, 1);
-    s += ',';
-    num_json(s, "feels_like", wx.feels, 1);
-    s += ',';
-    add(s, "\"humidity\":%d,", wx.humidity);
-    num_json(s, "wind", wx.wind, 1);
-    add(s, ",\"condition\":\"%s\",", wmo_text(wx.code));
-    num_json(s, "today_max", wx.today_max, 0);
-    s += ',';
-    num_json(s, "today_min", wx.today_min, 0);
-    s += ",\"forecast\":[";
-    for (int i = 0; i < 3; i++) {
-      if (i) s += ',';
-      add(s, "{\"day\":\"%s\",\"condition\":\"%s\",", wx.fc_day[i], wmo_text(wx.fc_code[i]));
-      num_json(s, "max", wx.fc_max[i], 0);
-      s += ',';
-      num_json(s, "min", wx.fc_min[i], 0);
-      s += '}';
-    }
-    s += ']';
-  }
-  s += "},";
+
+  json_weather(s);
+  s += ',';
+  json_history(s);
+  s += ',';
   json_boat(s);
-  s += "}";
-  chunk(s, true);
-  server.sendContent("");
+  s += '}';
+
+  server.send(200, "application/json", s);
+  uint32_t took = millis() - t0;
+  if (took > 300) logf("Web: /json took %lu ms (%u bytes)", (unsigned long)took, (unsigned)s.length());
 }
 
 /* The log, as plain text: handy when no computer is attached to the USB port */
@@ -732,12 +621,9 @@ static void handle_log() {
     return;
   }
   String s;
-  log_dump(s);  // the ring buffer lives in PSRAM, but this copy does not
-  if (!s.length()) s = "(log is empty)";
-  server.setContentLength(s.length());
-  server.send(200, "text/plain; charset=utf-8", "");
-  server.sendContent(s);
-  s = String();  // free it before returning
+  log_dump(s);
+  if (!s.length()) s = TR("(log is empty)");
+  server.send(200, "text/plain; charset=utf-8", s);
 }
 
 /* Files on the TF card: a list, or one file as a download */
@@ -747,7 +633,7 @@ static void handle_files() {
     return;
   }
   if (!sd_log_ok()) {
-    server.send(200, "text/plain", "No card mounted (Settings -> SD card)");
+    server.send(200, "text/plain; charset=utf-8", TR("No card mounted (Settings -> SD card)"));
     return;
   }
   if (server.hasArg("name")) {
@@ -763,22 +649,18 @@ static void handle_files() {
       return;
     }
     server.sendHeader("Content-Disposition", "attachment; filename=\"" + name.substring(1) + "\"");
-    server.streamFile(f, "text/plain");
-    f.close();
+    server.streamFile(f, "text/plain");  // sent in pieces by the server, which also closes the file
     return;
   }
 
   String list;
   sd_list_files(list);
-  server.setContentLength(CONTENT_LENGTH_UNKNOWN);
-  server.send(200, "text/html; charset=utf-8", "");
-
   String s;
-  s.reserve(800);
+  s.reserve(2048);
   s += FPSTR(PAGE_HEAD);
   char name[24];
   get_page_name(name, sizeof(name));
-  add(s, "<title>%s</title></head><body><h1>Files on the card</h1>", esc_html(name).c_str());
+  add(s, "<title>%s</title></head><body><h1>%s</h1>", esc_html(name).c_str(), TR("Files on the card"));
   int start = 0;
   while (start < (int)list.length()) {
     int nl = list.indexOf('\n', start);
@@ -791,11 +673,9 @@ static void handle_files() {
     long size = line.substring(tab + 1).toInt();
     add(s, "<div class='row'><span><a href='/files?name=%s'>%s</a></span><span class='sub'>%ld kB</span></div>",
         esc_html(fname.c_str()).c_str(), esc_html(fname.c_str()).c_str(), size / 1024);
-    chunk(s);
   }
-  s += F("<p class='sub'><a href='/'>back</a></p></body></html>");
-  chunk(s, true);
-  server.sendContent("");
+  add(s, "<p class='sub'><a href='/'>%s</a></p></body></html>", TR("back"));
+  server.send(200, "text/html; charset=utf-8", s);
 }
 
 /* ---------- NMEA 2000 API ---------- */
@@ -813,13 +693,26 @@ static void handle_n2k_set() {
     server.send(401, "text/plain", "login required");
     return;
   }
-  if (server.method() != HTTP_POST) {
+  if (server.method() != MH_POST) {
     server.send(405, "text/plain", "use POST");
     return;
   }
   bool ok = n2kApplySetting(server.arg("key"), server.arg("value"));
   if (ok) logf("Web: N2K %s = %s", server.arg("key").c_str(), server.arg("value").c_str());
   server.send(ok ? 200 : 400, "text/plain", ok ? "OK" : "bad key or value");
+}
+
+/* ---------- start, stop, serve ---------- */
+static void add_routes() {
+  server.on("/", handle_root);
+  server.on("/json", handle_json);
+  server.on("/lang", handle_lang);
+  server.on("/login", handle_login);
+  server.on("/logout", handle_logout);
+  server.on("/api/n2k", handle_n2k);
+  server.on("/api/n2k/set", handle_n2k_set);
+  server.on("/log", handle_log);
+  server.on("/files", handle_files);
 }
 
 void web_service() {
@@ -834,25 +727,35 @@ void web_service() {
   }
   if (!started) {
     if (WiFi.status() != WL_CONNECTED) return;  // start once WiFi is up
-    new_token();
-    const char *headers[] = { "Cookie" };
-    server.collectHeaders(headers, 1);
-    server.on("/", handle_root);
-    server.on("/json", handle_json);
-    server.on("/login", handle_login);
-    server.on("/logout", handle_logout);
-    server.on("/api/n2k", handle_n2k);
-    server.on("/api/n2k/set", handle_n2k_set);
-    server.on("/log", handle_log);
-    server.on("/files", handle_files);
-    server.onNotFound([]() {
-      server.send(404, "text/plain", "Not found");
-    });
-    server.begin();
+    static bool routes = false;
+    if (!routes) {
+      routes = true;
+      new_token();
+      add_routes();
+    }
+    if (!server.begin(WEB_PORT)) {
+      static uint32_t next_msg = 0;
+      if ((int32_t)(millis() - next_msg) >= 0) {
+        log_fault("Web server: could not open port 80 - retrying");
+        next_msg = millis() + 60000;
+      }
+      return;
+    }
     started = true;
-    if (MDNS.begin(MDNS_NAME)) MDNS.addService("http", "tcp", 80);
-    logf("Web server: http://%s.local/ or http://%s/", MDNS_NAME, WiFi.localIP().toString().c_str());
+    char host[32];
+    web_host_name(host, sizeof(host));
+    if (MDNS.begin(host)) MDNS.addService("http", "tcp", 80);
+    logf("Web server: http://%s.local/ or http://%s/", host, WiFi.localIP().toString().c_str());
+    host_changed = false;
     return;
+  }
+  if (host_changed) {  // the page was renamed: answer to the new .local name
+    host_changed = false;
+    char host[32];
+    web_host_name(host, sizeof(host));
+    MDNS.end();
+    if (MDNS.begin(host)) MDNS.addService("http", "tcp", 80);
+    logf("Web server: renamed, now http://%s.local/", host);
   }
   server.handleClient();
 }

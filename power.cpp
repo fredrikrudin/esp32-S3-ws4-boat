@@ -1,10 +1,14 @@
 // esp32-S3-ws4-boat v1.0
 /* Power saving and a periodic performance log.
  *
- * Power saving does two things while the screen saver is showing: the CPU drops
- * from 240 to 80 MHz and the backlight is already off or dim. WiFi modem sleep
- * is on at all times, which costs nothing in responsiveness for a page that is
- * polled, not pushed.
+ * Power saving while the screen saver shows: the backlight is dimmed (ui_saver.cpp),
+ * hidden tabs are not redrawn and the weather is not fetched.
+ *
+ * The CPU always runs at 240 MHz. Slowing it to 80 MHz under the screen saver
+ * (and in battery mode) made the board freeze: display and web page both stopped
+ * after "Power: CPU at 80 MHz". WiFi modem sleep is used only while the web server
+ * is switched off: in modem sleep the radio misses most multicast packets, so
+ * http://<name>.local/ stops resolving.
  *
  * The performance log prints one line every 30 s: free memory, the largest
  * block, PSRAM, the LVGL pool and how much stack each task has left. It is the
@@ -15,32 +19,17 @@
 #include <Wire.h>
 #include "WS_CH32_IO.h"
 
-static bool saving_now = false;
 volatile bool screen_asleep = false;
 
-/* Called by the screen saver when it starts and stops */
+/* Called by the screen saver when it starts and stops. The CPU speed is left
+   alone: changing it froze the board (see the top of this file). */
 void power_set_saving(bool asleep) {
   screen_asleep = asleep;  // the weather is not fetched while nobody looks
-  if (!feat_powersave) {
-    if (saving_now) {  // the setting was switched off while asleep
-      setCpuFrequencyMhz(240);
-      saving_now = false;
-    }
-    return;
-  }
-  if (asleep == saving_now) return;
-  saving_now = asleep;
-  /* 80 MHz is the lowest that keeps WiFi and Bluetooth working */
-  setCpuFrequencyMhz(asleep ? 80 : 240);
-  logf("Power: CPU at %d MHz", asleep ? 80 : 240);
-}
-
-bool power_saving_active() {
-  return saving_now;
 }
 
 /* Called from loop() */
 void perf_service() {
+
   static uint32_t next = 0;
   if (next && (int32_t)(millis() - next) < 0) return;
   next = millis() + 30000;
@@ -115,8 +104,7 @@ static void enter_battery_mode(int pct) {
   WiFi.disconnect(true, false);
   WiFi.mode(WIFI_OFF);
 
-  set_backlight(10);
-  setCpuFrequencyMhz(80);
+  set_backlight(10);  // the CPU stays at 240 MHz: 80 MHz froze the board
 
   make_banner();
   lv_obj_clear_flag(batt_banner, LV_OBJ_FLAG_HIDDEN);

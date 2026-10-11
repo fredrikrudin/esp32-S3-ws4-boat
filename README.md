@@ -126,7 +126,7 @@ Each page is a column of cards.
 | **Connect** | **WiFi** (scan, password, status) &middot; **Web page** (run the server, name, password) &middot; **Weather location** |
 | **Sensors** | **Temperature** (up to 3 RuuviTags) &middot; **Victron devices** (add, name, encryption key, live status) &middot; **Sensor scan interval** |
 | **NMEA 2000** | **NMEA 2000** (bus status, devices, gauge ranges and limits) &middot; **Engines** (twin engines) |
-| **Device** | **Language** (English, Svenska) &middot; **Display** (brightness, screen saver brightness) &middot; **SD card** (mount, eject, probe, logs, CSV, backup) &middot; **Power** (CPU slowdown, onboard LiPo, battery mode and its shutdown threshold) &middot; **Starting screen** &middot; **Alarms** &middot; **Debug** (serial monitor, performance log) &middot; **About** &middot; **System** (restart, shut down, full reset) |
+| **Device** | **Language** (English, Svenska) &middot; **Display** (brightness, screen saver brightness) &middot; **SD card** (mount, eject, probe, logs, CSV, backup) &middot; **Power** (onboard LiPo, battery mode and its shutdown threshold) &middot; **Starting screen** &middot; **Alarms** &middot; **Debug** (serial monitor, performance log) &middot; **About** &middot; **System** (restart, shut down, full reset) |
 
 Temperature has an on/off switch: switching it off also stops the RuuviTag decoding and takes
 the Ruuvi tab off the tab bar. A **full reset** erases every setting, the NMEA 2000 engine
@@ -137,7 +137,7 @@ board starts, in the size, colour and for the number of seconds you choose (0 sk
 
 **Running on the onboard battery**: with a LiPo in the board's connector and "Keep running on
 the battery" switched on under Settings → Device → Power, losing external power turns the
-display into a local instrument: WiFi and Bluetooth off, screen at 10%, CPU at 80 MHz. At the
+display into a local instrument: WiFi and Bluetooth off, screen at 10%. At the
 threshold you set (20% by default) it closes the log, unmounts the card and sleeps.
 
 **Screen saver**: after 30 s without touch, a 96-pixel clock and the battery state of charge
@@ -151,7 +151,10 @@ The display speaks **English** (the default) or **Swedish**, chosen under Settin
 Language. Changing it restarts the board, which takes a few seconds. Both are built into the
 firmware, so no SD card is needed. Engine and tank names that are still the defaults are
 translated too ("Port" becomes "Babord", "Fresh water" becomes "Färskvatten"); names you set
-yourself are shown as typed. The web page and its JSON stay in English.
+yourself are shown as typed. The web page follows the same language: its own texts come from `/lang` (the page's
+`T("...")` texts, translated in the same `.po` files), and the texts in `/json` (date, weather,
+Victron status, warnings) are sent in it. The numbers and field names in `/json` never change
+with the language.
 
 Translations are ordinary gettext `.po` files in `lang/`, so they can be edited with
 [Poedit](https://poedit.net/), and new languages can be added the same way. See
@@ -159,10 +162,15 @@ Translations are ordinary gettext `.po` files in `lang/`, so they can be edited 
 
 ## Web page
 
-Open **`http://boat.local/`** (or the board's IP, shown under Settings → WiFi) on the same
-WiFi. It shows the warnings, the battery and solar gauges, temperatures, depth, speed, sea
-temperature, engine and tanks, charts of the last 24 hours, the weather, the Victron devices
-and the board battery, and refreshes every 5 seconds. It is read-only.
+Open **`http://boat.local/`** (or the board's IP, shown under Settings → WiFi) on a phone,
+tablet or computer on the same WiFi. It shows the warnings, depth, speed, sea temperature,
+engine and tanks (coloured by their limits), battery and solar, temperatures, charts of the
+last 24 hours and 10 minutes, the weather, the Victron devices and the board battery. It is
+read-only and adapts to the screen: one column on a phone, two or three on a tablet or PC.
+It is one fixed file that the browser keeps; after that it only fetches `/json` every
+5 seconds and draws itself, so the board does little work per update. If the board doesn't
+answer, the page says so and keeps the last values. `sh tools/webpreview/build.sh` runs the
+page on a PC with example data.
 
 | Path | |
 |---|---|
@@ -173,7 +181,8 @@ and the board battery, and refreshes every 5 seconds. It is read-only.
 | `/files` | Files on the SD card, for download |
 
 Under **Settings → Connect → Web page** you can switch the server off (which frees its memory),
-name the page and set a password; scripts can then use `?key=<password>`. The page uses plain
+name the page and set a password. The address follows the name: a page called "Lilla Ö" is
+at `http://lilla-o.local/` (lower case, spaces become dashes, å ä ö become a a o); scripts can then use `?key=<password>`. The page uses plain
 HTTP, so the password keeps casual visitors out but is not strong security.
 
 ## Getting started
@@ -275,11 +284,14 @@ Flat folder: `app.h` holds shared configuration, types and declarations; each `.
 | `app.h`, `state.cpp` | Shared declarations, state, settings loading |
 | `board.cpp` | Display, touch, IO expander, LVGL driver, backlight, onboard LiPo |
 | `net.cpp` | Network task: WiFi, NTP, weather, all flash writes |
-| `web.cpp` | Web page, `/json`, `/api/n2k` |
+| `web.cpp` | Web pages and data: `/`, `/json`, `/lang`, `/api/n2k`, login, log, files |
+| `web_http.cpp`, `web_http.h` | The web server: several connections at once, never makes the loop wait |
+| `web_page.h` | The web page (HTML, CSS, JavaScript) that draws itself from `/json` |
 | `ble.cpp`, `ruuvi.cpp`, `victron.cpp` | Bluetooth scanning, RuuviTag and Victron decoding |
 | `ruuvi_hist.cpp` | Daily low and high per RuuviTag, 7 days, kept in flash |
 | `alarms.cpp` | Battery, Victron, wind, WiFi, LiPo and SD card warnings |
 | `power.cpp`, `sw6106.cpp` | Power saving, battery mode, performance log; power bank keep-alive |
+| `watchdog.cpp` | Restarts the board if the main loop hangs, and logs where |
 | `sdlog.cpp`, `datalog.cpp` | Log, CSV measurements, settings backup |
 | `history.cpp`, `ui_history.cpp` | Energy history behind the Power tab |
 | `lang.cpp`, `lang_tables.h`, `lang/`, `font_latin1.c` | Language: translation lookup, the built-in translations (generated), the `.po` files, fonts with Swedish letters |
@@ -298,6 +310,7 @@ Flat folder: `app.h` holds shared configuration, types and declarations; each `.
 | `tools/set_version.py` | Sets the version in every file |
 | `tools/i18n.py`, `tools/strings.py` | Translations: template, `.po` update, `lang_tables.h` |
 | `tools/screenshots/` | Renders the screenshots with the real UI code on a PC |
+| `tools/webpreview/` | Runs the web page on a PC with example data |
 | `tools/n2k_bus_test/` | Standalone NMEA 2000 bus test sketch |
 
 ## Hardware notes

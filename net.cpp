@@ -260,7 +260,7 @@ static void save_pending() {
   }
   if (cmd_save_feat) {
     cmd_save_feat = false;
-    prefs.putUChar("feat", (feat_ruuvi ? 0x01 : 0) | (feat_sdlog ? 0x20 : 0) | (feat_csv ? 0x40 : 0) | (feat_powersave ? 0 : 0x80));
+    prefs.putUChar("feat", (feat_ruuvi ? 0x01 : 0) | (feat_sdlog ? 0x20 : 0) | (feat_csv ? 0x40 : 0));
     prefs.putUChar("csvmin", csv_interval_min);
     prefs.putUChar("battmode", feat_battmode ? 1 : 0);
     prefs.putUChar("battpct", batt_shutdown_pct);
@@ -343,7 +343,7 @@ static void net_task(void *arg) {
   WiFi.onEvent(wifi_event);
   WiFi.mode(WIFI_STA);
   WiFi.setAutoReconnect(true);
-  WiFi.setSleep(true);  // modem sleep: less power, no downside for a polled page
+  WiFi.setSleep(true);  // modem sleep: required while Bluetooth shares the radio (BOARD_NOTES.md)
   wifi_inited = true;  // setup() waits for this before starting Bluetooth
 
   bool was_up = false, ntp_started = false;
