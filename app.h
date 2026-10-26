@@ -261,7 +261,7 @@ struct SplashCfg {
   uint8_t seconds;  // how long it stays, 0 = skip it
 };
 
-/* Ruuvi tab history: daily low and high per added tag (ruuvi_hist.cpp) */
+/* Temp tab history: daily low and high per added tag (ruuvi_hist.cpp) */
 #define RUUVI_DAYS 7
 #define RUUVI_NONE INT16_MIN  // no reading that day
 struct RuuviDay {
@@ -301,7 +301,7 @@ extern volatile bool cmd_save_ruuvi, cmd_save_vic, cmd_save_scan, cmd_save_bl, c
 extern volatile bool scan_restart;
 
 /* Features that can be switched off in Settings (services stop too) */
-extern volatile bool feat_ruuvi;   // Ruuvi tab: RuuviTag reading
+extern volatile bool feat_ruuvi;   // Temp tab: RuuviTag reading
 extern volatile bool feat_web;     // run the web server at all (default on)
 extern volatile bool feat_sdlog;   // write the log to the TF card (default off)
 extern volatile bool feat_perflog;
@@ -311,7 +311,11 @@ extern volatile uint8_t batt_shutdown_pct;  // shut down at this charge
 extern volatile bool feat_csv;     // write measurements to /data.csv (default off)
 extern volatile uint8_t csv_interval_min;  // minutes between CSV lines
 
-extern volatile uint8_t scan_interval_s;  // BLE scan interval, 1-10 s (1 = continuous)
+#define SCAN_MIN_S 10   // Bluetooth sensors are read every 10 s (default) ...
+#define SCAN_MAX_S 360  // ... up to every 6 minutes
+extern volatile uint16_t scan_interval_s;  // seconds between Bluetooth scans; 10 s while Settings is open
+void ble_scan_now();                       // scan at once (the Scan now button)
+uint32_t sensor_stale_ms(uint32_t base_ms);  // how old a Bluetooth reading may be: base, or longer with a long interval
 extern volatile uint8_t bl_normal;        // backlight %, normal use
 extern volatile uint8_t bl_saver;         // backlight %, screen saver
 
@@ -343,6 +347,12 @@ bool net_wait_wifi_init(uint32_t ms);  // waits until the WiFi driver is initial
 void web_service();           // call from loop(): starts the web server once WiFi is up, then serves requests
 void web_password_changed();  // call after g.web_pass changed: logs everyone out
 void web_name_changed();      // call after g.web_name changed: the .local address follows it
+void web_wifi_back();         // WiFi reconnected: announce the .local name again
+bool web_busy();              // the web server is receiving a request or sending a reply
+/* Where internal RAM goes: the change in free internal RAM across each Bluetooth
+   scan and battery connection attempt, summed in the 10-minute "Memory:" log line */
+enum { MEM_BLE_SCAN, MEM_BMS_CONNECT, MEM_SOURCES };
+void mem_note(int source, int32_t change);
 void web_host_name(char *out, size_t n);  // "Cabby 620" -> "cabby-620" (MDNS_NAME if nothing is left)
 
 /* ruuvi.cpp */
@@ -362,6 +372,7 @@ const char *vic_status(const VicData &d, uint8_t type, uint32_t now);
 /* ble.cpp */
 void ble_start();
 void ble_scan_service();          // call from loop()
+#define BATT_SCAN_S 300  // on the LiPo: one Bluetooth scan every 5 minutes
 void ble_pause_scan(bool pause);  // stop scanning while connecting to a device
 
 /* sdlog.cpp (log to Serial, to a ring buffer readable at /log, and to the TF card) */
@@ -471,7 +482,7 @@ void power_timer_cb(lv_timer_t *t);
 void ruuvi_hist_note(int slot, const char *mac, float temp);     // a reading from an added tag
 bool ruuvi_hist_get(int slot, const char *mac, RuuviHist *out);  // false: nothing for this tag yet
 
-/* ui_temp.cpp (the Ruuvi tab) */
+/* ui_temp.cpp (the Temp tab) */
 void build_temp_tab();
 void ruuvi_timer_cb(lv_timer_t *t);
 
@@ -496,6 +507,7 @@ void n2k_save_pending();  // called by the network task: does the N2K flash writ
 /* ui_saver.cpp */
 void build_saver();
 void saver_timer_cb(lv_timer_t *t);
+void saver_show_now();  // dim to the screen saver at once (battery mode)
 void saver_wake();  // leave the screen saver (used by the start page on a new alarm)
 
 /* ================================================================== */

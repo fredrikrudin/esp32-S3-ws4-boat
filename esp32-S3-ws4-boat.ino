@@ -4,7 +4,7 @@
  * Boat display for the Waveshare ESP32-S3-Touch-LCD-4 (V4, CH32V003 IO expander).
  *
  * Tabs: Home | Nav (NMEA 2000) | Engine (N2K) | Tanks (N2K) | Power (Victron BLE) |
- *       Ruuvi (RuuviTag) | Weather | Settings (N2K devices and limits open from here)
+ *       Temp (RuuviTags) | Weather | Settings (N2K devices and limits open from here)
  * Web page: http://boat.local/ (JSON at /json, NMEA 2000 at /api/n2k)
  * See README.md for libraries and Arduino IDE settings.
  *

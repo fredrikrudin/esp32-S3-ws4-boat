@@ -224,8 +224,12 @@ void n2kStart() {
   s_devList = new tN2kDeviceList(s_n2k);
 
   bool ok = s_n2k->Open();
-  (ok ? logf : log_fault)("N2K: CAN TX=%d RX=%d, %s, open %s", (int)N2K_CAN_TX_PIN, (int)N2K_CAN_RX_PIN,
-                          N2K_LISTEN_ONLY ? "listen-only" : "node", ok ? "OK" : "FAILED");
+  /* (not "(ok ? logf : log_fault)(...)": logf is also the C maths function, so that
+     doesn't compile) */
+  if (ok) logf("N2K: CAN TX=%d RX=%d, %s, open OK", (int)N2K_CAN_TX_PIN, (int)N2K_CAN_RX_PIN,
+               N2K_LISTEN_ONLY ? "listen-only" : "node");
+  else log_fault("N2K: CAN TX=%d RX=%d, %s, open FAILED", (int)N2K_CAN_TX_PIN, (int)N2K_CAN_RX_PIN,
+                 N2K_LISTEN_ONLY ? "listen-only" : "node");
   logf("N2K: Engine tab shows \"%s\" instance %u, source %s", n2kSettings.engName,
        n2kSettings.engInstance, n2kSettings.engSource == 255 ? "any" : String(n2kSettings.engSource).c_str());
 

@@ -48,7 +48,7 @@ left out, NMEA 2000 was added.
 | **Engine** | Tachometer, coolant / oil pressure / alternator gauges with coloured zones, oil temp, fuel rate, hours, engine alarms - NMEA 2000. The dropdown chooses which engine this display shows |
 | **Tanks** | One vertical gauge per tank (fresh, grey, black water, fuel ...) in %, litres when the sender reports capacity - NMEA 2000 |
 | **Power** | Victron devices over Bluetooth (Instant Readout) with animated energy flows; tap a tile for 24 h / 7 day history |
-| **Ruuvi** | Up to 3 named RuuviTags: temperature, humidity, pressure, battery, and a chart of each tag's daily low and high over the last 7 days |
+| **Temp** | Up to 3 named RuuviTags: temperature, humidity, pressure, battery, and a chart of each tag's daily low and high over the last 7 days |
 | **Weather** | NTP clock, current weather and a 3-day forecast from Open-Meteo (no API key). Updated every hour while the screen is awake, and at once with **Refresh** |
 | **⚙ Settings** | Four pages: Connect, Sensors, NMEA 2000, Device - see [Settings](#settings) |
 
@@ -129,7 +129,7 @@ Each page is a column of cards.
 | **Device** | **Language** (English, Svenska) &middot; **Display** (brightness, screen saver brightness) &middot; **SD card** (mount, eject, probe, logs, CSV, backup) &middot; **Power** (onboard LiPo, battery mode and its shutdown threshold) &middot; **Starting screen** &middot; **Alarms** &middot; **Debug** (serial monitor, performance log) &middot; **About** &middot; **System** (restart, shut down, full reset) |
 
 Temperature has an on/off switch: switching it off also stops the RuuviTag decoding and takes
-the Ruuvi tab off the tab bar. A **full reset** erases every setting, the NMEA 2000 engine
+the Temp tab off the tab bar. A **full reset** erases every setting, the NMEA 2000 engine
 choice, tank names and limits included, so back up to the card first.
 
 **Starting screen**: a name in large letters ("BOAT" by default, "BÅT" in Swedish) while the
@@ -137,7 +137,7 @@ board starts, in the size, colour and for the number of seconds you choose (0 sk
 
 **Running on the onboard battery**: with a LiPo in the board's connector and "Keep running on
 the battery" switched on under Settings → Device → Power, losing external power turns the
-display into a local instrument: WiFi and Bluetooth off, screen at 10%. At the
+display into a local instrument: WiFi off, Bluetooth listening once every 5 minutes, the screen dimmed until touched. At the
 threshold you set (20% by default) it closes the log, unmounts the card and sleeps.
 
 **Screen saver**: after 30 s without touch, a 96-pixel clock and the battery state of charge
@@ -167,8 +167,8 @@ tablet or computer on the same WiFi. It shows the warnings, depth, speed, sea te
 engine and tanks (coloured by their limits), battery and solar, temperatures, charts of the
 last 24 hours and 10 minutes, the weather, the Victron devices and the board battery. It is
 read-only and adapts to the screen: one column on a phone, two or three on a tablet or PC.
-It is one fixed file that the browser keeps; after that it only fetches `/json` every
-5 seconds and draws itself, so the board does little work per update. If the board doesn't
+It is one fixed file that the browser keeps; after that it fetches `/json` every
+30 seconds (every 2 minutes once left alone; **Update** fetches at once) and draws itself, so the board does little work per update. If the board doesn't
 answer, the page says so and keeps the last values. `sh tools/webpreview/build.sh` runs the
 page on a PC with example data.
 
@@ -204,7 +204,11 @@ with the display firmware.
 
 - **lvgl 8.x**, with the `lv_conf.h` from Waveshare's examples (the gauges use `lv_meter`,
   which LVGL 9 no longer has); `lv_conf.example.h` shows the settings that matter
-- **GFX Library for Arduino**, **SensorLib** and **WS_CH32_IO**: the versions bundled with
+- **GFX Library for Arduino** 1.6 or later recommended (Library Manager; tested to compile with 1.6.9).
+  Waveshare's bundled 1.5.3 works too, but it always takes 77 kB of internal RAM for the display's
+  bounce buffers; with 1.6 the firmware sets them to 10 lines and about 58 kB more is free. The
+  boot log says which: `Internal heap after display init: … (bounce buffers 10 lines)`.
+- **SensorLib** and **WS_CH32_IO**: the versions bundled with
   Waveshare's ESP32-S3-Touch-LCD-4 examples
   ([waveshareteam/ESP32-S3-Touch-LCD-4](https://github.com/waveshareteam/ESP32-S3-Touch-LCD-4), `examples/arduino/libraries`)
 - **ArduinoJson** v7
@@ -287,6 +291,7 @@ Flat folder: `app.h` holds shared configuration, types and declarations; each `.
 | `web.cpp` | Web pages and data: `/`, `/json`, `/lang`, `/api/n2k`, login, log, files |
 | `web_http.cpp`, `web_http.h` | The web server: several connections at once, never makes the loop wait |
 | `web_page.h` | The web page (HTML, CSS, JavaScript) that draws itself from `/json` |
+| `web_page_gz.h` | The same page compressed, as the board sends it. Made by `python3 tools/web_gz.py`: run it after editing `web_page.h` |
 | `ble.cpp`, `ruuvi.cpp`, `victron.cpp` | Bluetooth scanning, RuuviTag and Victron decoding |
 | `ruuvi_hist.cpp` | Daily low and high per RuuviTag, 7 days, kept in flash |
 | `alarms.cpp` | Battery, Victron, wind, WiFi, LiPo and SD card warnings |
